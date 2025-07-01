@@ -32,6 +32,7 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
     Raises:
         NotImplementedError: If the reward function is not implemented for the given data source.
     """
+    # breakpoint() # to check for data source # TODO: figure out how to debug in ray cluster.
     if data_source == "openai/gsm8k":
         from . import gsm8k
 
@@ -83,7 +84,20 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
         from . import search_r1_like_qa_em
 
         res = search_r1_like_qa_em.compute_score(solution_str, ground_truth)
-
+    elif data_source in [
+        "lexical_match_custom",
+        "lexical_match",
+        "string_match_custom",
+        "string_match",
+    ]:
+        # Generic lexical similarity reward based on BM25 / Levenshtein, etc.
+        from . import lexical
+        res = lexical.compute_score(
+            data_source=data_source,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            extra_info=extra_info,
+        )
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 
