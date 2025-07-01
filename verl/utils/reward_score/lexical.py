@@ -231,7 +231,22 @@ def compute_score(
         bm25_index = BM25Okapi(docs_tokens)
         ideal_scores = bm25_index.get_scores(_tokenize(" ".join(refs)))
 
-        def _bm25_cached(q: str) -> float:
+        # NOTE: `compute_score` expects *measure_fn* callables to accept two
+        # positional arguments (query and reference) even though the BM25
+        # implementation can score the query against *all* references at
+        # once via the pre-built index. We therefore include an extra, unused
+        # positional parameter so that the signature matches the expected
+        # ``Callable[[str, str], float]`` type and avoids ``TypeError`` when
+        # invoked as ``measure_fn(sol, ref)`` inside the nested loop.
+
+        def _bm25_cached(q: str, _unused_ref: str | None = None) -> float:  # noqa: D401
+            """Return the best normalised BM25 score of *q* w.r.t the index.
+
+            The additional ``_unused_ref`` parameter is present **only** to
+            satisfy the two-argument calling convention used elsewhere in this
+            module – it is ignored during computation.
+            """
+
             q_tokens = _tokenize(q)
             raw_scores = bm25_index.get_scores(q_tokens)
             best = 0.0
@@ -296,7 +311,17 @@ def compute_score_batched(
         bm25_index = BM25Okapi(docs_tokens)
         ideal_scores = bm25_index.get_scores(_tokenize(" ".join(flattened_refs)))
 
-        def bm25_batch(q: str) -> float:
+        # NOTE: `compute_score` expects *measure_fn* callables to accept two
+        # positional arguments (query and reference) even though the BM25
+        # implementation can score the query against *all* references at
+        # once via the pre-built index. We therefore include an extra, unused
+        # positional parameter so that the signature matches the expected
+        # ``Callable[[str, str], float]`` type and avoids ``TypeError`` when
+        # invoked as ``measure_fn(sol, ref)`` inside the nested loop.
+
+        def bm25_batch(q: str, _unused_ref: str | None = None) -> float:  # noqa: D401
+            """BM25 scoring helper matching the two-argument call signature."""
+
             q_tokens = _tokenize(q)
             raw_scores = bm25_index.get_scores(q_tokens)
             best = 0.0
