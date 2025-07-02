@@ -37,6 +37,8 @@ If you need a different metric (e.g. *ratio*):
 1.0
 """
 
+import pdb; # * Hacky way to debug the verl codebase (ray cluster)
+
 from typing import Callable, List
 import re
 import warnings
@@ -227,9 +229,18 @@ def compute_score(
 
     # Build BM25 index once when needed (performance).
     if metric == "bm25" and _HAS_BM25:
+        # Pre-tokenise the reference corpus and build a single BM25 index.
         docs_tokens = [_tokenize(r) for r in refs]
         bm25_index = BM25Okapi(docs_tokens)
-        ideal_scores = bm25_index.get_scores(_tokenize(" ".join(refs)))
+
+        # Compute an *ideal* score for every reference – that is, the score
+        # obtained when the query exactly matches the document itself.  This
+        # provides a true upper-bound (≥ raw_score) for normalisation and
+        # guarantees that raw_score / ideal_score is ≤ 1.0.
+        ideal_scores = [
+            bm25_index.get_scores(doc_tokens)[idx]
+            for idx, doc_tokens in enumerate(docs_tokens)
+        ]
 
         # NOTE: `compute_score` expects *measure_fn* callables to accept two
         # positional arguments (query and reference) even though the BM25
@@ -265,7 +276,7 @@ def compute_score(
             if best == 1.0:
                 break
         per_sol_best.append(best)
-
+    
     return sum(per_sol_best) / len(per_sol_best)
 
 
@@ -309,7 +320,10 @@ def compute_score_batched(
     if metric == "bm25" and _HAS_BM25:
         docs_tokens = [_tokenize(r) for r in flattened_refs]
         bm25_index = BM25Okapi(docs_tokens)
-        ideal_scores = bm25_index.get_scores(_tokenize(" ".join(flattened_refs)))
+        ideal_scores = [
+            bm25_index.get_scores(doc_tokens)[idx]
+            for idx, doc_tokens in enumerate(docs_tokens)
+        ]
 
         # NOTE: `compute_score` expects *measure_fn* callables to accept two
         # positional arguments (query and reference) even though the BM25
