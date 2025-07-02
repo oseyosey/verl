@@ -6,8 +6,14 @@ import datasets
 from verl.utils.fs import copy, makedirs  # type: ignore
 
 
-def transform_example(example, idx: int, split: str):
-    """Convert raw record into verl RL parquet compatible format."""
+def transform_example(example, idx: int, split: str, metric: str = 'bm25'):
+    """Convert raw record into verl RL parquet compatible format.
+
+    The *metric* argument specifies which lexical metric (bm25 / ratio / levenshtein)
+    should be applied at training-time.  It is stored in ``extra_info`` so that the
+    reward loader can forward it to ``lexical.compute_score``.
+    """
+
     return {
         'data_source': example.get('data_source', 'lexical_match_custom'),
         'prompt': [{'role': 'user', 'content': example.get('prompt', '')}],
@@ -19,6 +25,7 @@ def transform_example(example, idx: int, split: str):
         'extra_info': {
             'split': split,
             'index': idx,
+            'metric': metric,
         },
     }
 
@@ -28,12 +35,15 @@ def main():
     parser.add_argument('--hf_dataset_dir', required=True, help='Path to the dataset directory produced by generate_lexical_match_dataset.py')
     parser.add_argument('--output_dir', default='~/data/lexical_match_custom/rl', help='Where to save parquet file')
     parser.add_argument('--hdfs_dir', default=None, help='Optional HDFS path to mirror parquet file')
+    parser.add_argument('--metric', choices=['bm25', 'ratio', 'levenshtein'], default='bm25', help='Lexical similarity metric to be used during RL training')
     args = parser.parse_args()
 
     dataset = datasets.load_from_disk(os.path.expanduser(args.hf_dataset_dir))
 
-    # Map transformation
-    dataset = dataset.map(lambda ex, idx: transform_example(ex, idx, 'train'), with_indices=True, remove_columns=dataset.column_names)
+    # Map transformation with selected metric
+    from functools import partial
+    transform_fn = partial(transform_example, split='train', metric=args.metric)
+    dataset = dataset.map(transform_fn, with_indices=True, remove_columns=dataset.column_names)
 
     output_dir = os.path.expanduser(args.output_dir)
     os.makedirs(output_dir, exist_ok=True)

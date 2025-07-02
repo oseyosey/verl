@@ -87,16 +87,22 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
     elif data_source in [
         "lexical_match_custom",
         "lexical_match",
-        "string_match_custom",
-        "string_match",
     ]:
         # Generic lexical similarity reward based on BM25 / Levenshtein, etc.
         from . import lexical
+        # Allow callers to override the lexical metric via ``extra_info``.  For
+        # backward-compatibility we keep the old behaviour (default to BM25)
+        # when nothing is specified.
+        metric_from_extra = None
+        if isinstance(extra_info, dict):
+            metric_from_extra = extra_info.get("metric") or extra_info.get("lexical_metric")
+
         res = lexical.compute_score(
             data_source=data_source,
             solution_str=solution_str,
             ground_truth=ground_truth,
             extra_info=extra_info,
+            metric=metric_from_extra or "levenshtein",
         )
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
