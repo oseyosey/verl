@@ -18,7 +18,7 @@
 import argparse
 import json
 import warnings
-from typing import Optional
+from typing import List, Optional
 
 import datasets
 import faiss
@@ -75,7 +75,7 @@ class Encoder:
         self.model.eval()
 
     @torch.no_grad()
-    def encode(self, query_list: list[str], is_query=True) -> np.ndarray:
+    def encode(self, query_list: List[str], is_query=True) -> np.ndarray:
         # processing query for different encoders
         if isinstance(query_list, str):
             query_list = [query_list]
@@ -88,27 +88,19 @@ class Encoder:
 
         if "bge" in self.model_name.lower():
             if is_query:
-                query_list = [
-                    f"Represent this sentence for searching relevant passages: {query}" for query in query_list
-                ]
+                query_list = [f"Represent this sentence for searching relevant passages: {query}" for query in query_list]
 
-        inputs = self.tokenizer(
-            query_list, max_length=self.max_length, padding=True, truncation=True, return_tensors="pt"
-        )
+        inputs = self.tokenizer(query_list, max_length=self.max_length, padding=True, truncation=True, return_tensors="pt")
         inputs = {k: v.cuda() for k, v in inputs.items()}
 
         if "T5" in type(self.model).__name__:
             # T5-based retrieval model
-            decoder_input_ids = torch.zeros((inputs["input_ids"].shape[0], 1), dtype=torch.long).to(
-                inputs["input_ids"].device
-            )
+            decoder_input_ids = torch.zeros((inputs["input_ids"].shape[0], 1), dtype=torch.long).to(inputs["input_ids"].device)
             output = self.model(**inputs, decoder_input_ids=decoder_input_ids, return_dict=True)
             query_emb = output.last_hidden_state[:, 0, :]
         else:
             output = self.model(**inputs, return_dict=True)
-            query_emb = pooling(
-                output.pooler_output, output.last_hidden_state, inputs["attention_mask"], self.pooling_method
-            )
+            query_emb = pooling(output.pooler_output, output.last_hidden_state, inputs["attention_mask"], self.pooling_method)
             if "dpr" not in self.model_name.lower():
                 query_emb = torch.nn.functional.normalize(query_emb, dim=-1)
 
@@ -133,13 +125,13 @@ class BaseRetriever:
     def _search(self, query: str, num: int, return_score: bool):
         raise NotImplementedError
 
-    def _batch_search(self, query_list: list[str], num: int, return_score: bool):
+    def _batch_search(self, query_list: List[str], num: int, return_score: bool):
         raise NotImplementedError
 
     def search(self, query: str, num: int = None, return_score: bool = False):
         return self._search(query, num, return_score)
 
-    def batch_search(self, query_list: list[str], num: int = None, return_score: bool = False):
+    def batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
         return self._batch_search(query_list, num, return_score)
 
 
@@ -174,14 +166,7 @@ class BM25Retriever(BaseRetriever):
 
         if self.contain_doc:
             all_contents = [json.loads(self.searcher.doc(hit.docid).raw())["contents"] for hit in hits]
-            results = [
-                {
-                    "title": content.split("\n")[0].strip('"'),
-                    "text": "\n".join(content.split("\n")[1:]),
-                    "contents": content,
-                }
-                for content in all_contents
-            ]
+            results = [{"title": content.split("\n")[0].strip('"'), "text": "\n".join(content.split("\n")[1:]), "contents": content} for content in all_contents]
         else:
             results = load_docs(self.corpus, [hit.docid for hit in hits])
 
@@ -190,7 +175,7 @@ class BM25Retriever(BaseRetriever):
         else:
             return results
 
-    def _batch_search(self, query_list: list[str], num: int = None, return_score: bool = False):
+    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
         results = []
         scores = []
         for query in query_list:
@@ -214,13 +199,7 @@ class DenseRetriever(BaseRetriever):
             self.index = faiss.index_cpu_to_all_gpus(self.index, co=co)
 
         self.corpus = load_corpus(self.corpus_path)
-        self.encoder = Encoder(
-            model_name=self.retrieval_method,
-            model_path=config.retrieval_model_path,
-            pooling_method=config.retrieval_pooling_method,
-            max_length=config.retrieval_query_max_length,
-            use_fp16=config.retrieval_use_fp16,
-        )
+        self.encoder = Encoder(model_name=self.retrieval_method, model_path=config.retrieval_model_path, pooling_method=config.retrieval_pooling_method, max_length=config.retrieval_query_max_length, use_fp16=config.retrieval_use_fp16)
         self.topk = config.retrieval_topk
         self.batch_size = config.retrieval_batch_size
 
@@ -237,7 +216,7 @@ class DenseRetriever(BaseRetriever):
         else:
             return results
 
-    def _batch_search(self, query_list: list[str], num: int = None, return_score: bool = False):
+    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
         if isinstance(query_list, str):
             query_list = [query_list]
         if num is None:
@@ -318,7 +297,7 @@ class Config:
 
 
 class QueryRequest(BaseModel):
-    queries: list[str]
+    queries: List[str]
     topk: Optional[int] = None
     return_scores: bool = False
 
@@ -355,9 +334,7 @@ def retrieve_endpoint(request: QueryRequest):
         request.topk = config.retrieval_topk  # fallback to default
 
     # Perform batch retrieval
-    results, scores = retriever.batch_search(
-        query_list=request.queries, num=request.topk, return_score=request.return_scores
-    )
+    results, scores = retriever.batch_search(query_list=request.queries, num=request.topk, return_score=request.return_scores)
 
     # Format response
     resp = []
@@ -365,7 +342,7 @@ def retrieve_endpoint(request: QueryRequest):
         if request.return_scores:
             # If scores are returned, combine them with results
             combined = []
-            for doc, score in zip(single_result, scores[i], strict=True):
+            for doc, score in zip(single_result, scores[i]):
                 combined.append({"document": doc, "score": score})
             resp.append(combined)
         else:
@@ -375,20 +352,11 @@ def retrieve_endpoint(request: QueryRequest):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch the local faiss retriever.")
-    parser.add_argument(
-        "--index_path", type=str, default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index", help="Corpus indexing file."
-    )
-    parser.add_argument(
-        "--corpus_path",
-        type=str,
-        default="/home/peterjin/mnt/data/retrieval-corpus/wiki-18.jsonl",
-        help="Local corpus file.",
-    )
+    parser.add_argument("--index_path", type=str, default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index", help="Corpus indexing file.")
+    parser.add_argument("--corpus_path", type=str, default="/home/peterjin/mnt/data/retrieval-corpus/wiki-18.jsonl", help="Local corpus file.")
     parser.add_argument("--topk", type=int, default=3, help="Number of retrieved passages for one query.")
     parser.add_argument("--retriever_name", type=str, default="e5", help="Name of the retriever model.")
-    parser.add_argument(
-        "--retriever_model", type=str, default="intfloat/e5-base-v2", help="Path of the retriever model."
-    )
+    parser.add_argument("--retriever_model", type=str, default="intfloat/e5-base-v2", help="Path of the retriever model.")
     parser.add_argument("--faiss_gpu", action="store_true", help="Use GPU for computation")
 
     args = parser.parse_args()

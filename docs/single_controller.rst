@@ -1,8 +1,6 @@
 The Design of ``verl.single_controller``
 ==============================================
 
-Last updated: 05/21/2025.
-
 **Author:**\  `Wang Zhang <https://github.com/zw0610>`__
 
 Preface

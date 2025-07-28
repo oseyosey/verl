@@ -15,11 +15,10 @@
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from uuid import uuid4
 
 from verl.utils.reward_score import gsm8k
-from verl.utils.rollout_trace import rollout_trace_op
 
 from .base_tool import BaseTool
 from .schemas import OpenAIFunctionToolSchema
@@ -74,8 +73,7 @@ class Gsm8kTool(BaseTool):
         }
         return instance_id
 
-    @rollout_trace_op
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[str, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str, float, dict]:
         answer = parameters.get("answer", "")
         if not isinstance(answer, str):
             answer = str(answer)

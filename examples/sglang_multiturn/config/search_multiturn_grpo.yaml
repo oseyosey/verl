@@ -16,8 +16,8 @@ data:
 actor_rollout_ref:
   hybrid_engine: True
   rollout:
-    name: sglang
+    name: sglang_async
     multi_turn:
       enable: True
-      max_assistant_turns: 2
+      max_turns: 2
       format: qwen

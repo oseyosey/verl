@@ -17,7 +17,7 @@ Multi-turn SFT dataset that supports training on conversation data with multiple
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -47,7 +47,7 @@ class MultiTurnSFTDataset(Dataset):
     Dataset for multi-turn conversations where each assistant response should be trained
     """
 
-    def __init__(self, parquet_files: str | list[str], tokenizer, config=None):
+    def __init__(self, parquet_files: Union[str, List[str]], tokenizer, config=None):
         # Set defaults and extract parameters from config if provided
         config = config or {}
         self.truncation = config.get("truncation", "error")
@@ -59,7 +59,7 @@ class MultiTurnSFTDataset(Dataset):
         self.enable_thinking_key = multiturn_config.get("enable_thinking_key", "enable_thinking")
         assert self.truncation in ["error", "left", "right"]
 
-        if not isinstance(parquet_files, list):
+        if not isinstance(parquet_files, List):
             parquet_files = [parquet_files]
 
         self.parquet_files = parquet_files
@@ -79,7 +79,7 @@ class MultiTurnSFTDataset(Dataset):
             import numpy
             import pandas
 
-            while isinstance(ls, pandas.core.series.Series | numpy.ndarray) and len(ls) == 1:
+            while isinstance(ls, (pandas.core.series.Series, numpy.ndarray)) and len(ls) == 1:
                 ls = ls[0]
             return ls
 
@@ -108,13 +108,13 @@ class MultiTurnSFTDataset(Dataset):
 
     def _process_message_tokens(
         self,
-        messages: list[dict[str, Any]],
+        messages: List[Dict[str, Any]],
         start_idx: int,
         end_idx: int,
         is_assistant: bool = False,
         enable_thinking: Optional[bool] = None,
-        tools: Optional[list[dict[str, Any]]] = None,
-    ) -> tuple[list[int], list[int], list[int]]:
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[int], List[int], List[int]]:
         """
         Process tokens for a single message or a group of messages.
 
@@ -167,9 +167,7 @@ class MultiTurnSFTDataset(Dataset):
                 add_special_tokens=False,
             )
             message_tokens = generation_prompt_tokens + _message_tokens
-            loss_mask = [0] * (len(generation_prompt_tokens)) + [1] * (
-                len(message_tokens) - len(generation_prompt_tokens)
-            )
+            loss_mask = [0] * (len(generation_prompt_tokens)) + [1] * (len(message_tokens) - len(generation_prompt_tokens))
         else:
             message_tokens = self.tokenizer.encode(
                 cur_applied_text[len(prev_applied_text) :],
@@ -184,10 +182,10 @@ class MultiTurnSFTDataset(Dataset):
     def _validate_and_convert_tokens(
         self,
         full_tokens: torch.Tensor,
-        concat_tokens: list[int],
-        concat_loss_mask: list[int],
-        concat_attention_mask: list[int],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        concat_tokens: List[int],
+        concat_loss_mask: List[int],
+        concat_attention_mask: List[int],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Validate tokenization and convert to tensors.
 
@@ -202,12 +200,9 @@ class MultiTurnSFTDataset(Dataset):
         """
         full_tokens_list = full_tokens.tolist()
 
-        if len(concat_tokens) != len(full_tokens_list) or not all(
-            a == b for a, b in zip(concat_tokens, full_tokens_list, strict=True)
-        ):
+        if len(concat_tokens) != len(full_tokens_list) or not all(a == b for a, b in zip(concat_tokens, full_tokens_list)):
             logging.warning(
-                f"Token mismatch detected! Full tokenization length: {len(full_tokens_list)}, Concatenated tokens "
-                f"length: {len(concat_tokens)}. Using concatenated version."
+                f"Token mismatch detected! Full tokenization length: {len(full_tokens_list)}, Concatenated tokens length: {len(concat_tokens)}. Using concatenated version."
                 # f"full tokens text: {self.tokenizer.decode(full_tokens_list)}"
                 # f"concat tokens text: {self.tokenizer.decode(concat_tokens)}"
             )
@@ -217,17 +212,18 @@ class MultiTurnSFTDataset(Dataset):
                 torch.tensor(concat_attention_mask, dtype=torch.long),
             )
 
-        return (
-            full_tokens,
-            torch.tensor(concat_loss_mask, dtype=torch.long),
-            torch.tensor(concat_attention_mask, dtype=torch.long),
-        )
+        return full_tokens, torch.tensor(concat_loss_mask, dtype=torch.long), torch.tensor(concat_attention_mask, dtype=torch.long)
 
     def __getitem__(self, item):
         tokenizer = self.tokenizer
         messages = self.messages[item]
         tools = self.tools[item] if self.tools is not None else None
         enable_thinking = self.enable_thinking[item] if self.enable_thinking is not None else None
+
+        if self.tools is not None:
+            tools = self.tools[item]
+        else:
+            tools = None
 
         # First, get the full conversation tokens
         try:
@@ -240,10 +236,7 @@ class MultiTurnSFTDataset(Dataset):
                 enable_thinking=enable_thinking,
             )
         except Exception as e:
-            logging.error(
-                f"Error applying chat template: {e}\nMessages: {messages}\nTools: {tools}\nEnable thinking: "
-                f"{enable_thinking}"
-            )
+            logging.error(f"Error applying chat template: {e}\nMessages: {messages}\nTools: {tools}\nEnable thinking: {enable_thinking}")
             raise
 
         # Track concatenated tokens for validation
@@ -256,9 +249,7 @@ class MultiTurnSFTDataset(Dataset):
             cur_messages = messages[i]
             if cur_messages["role"] == "assistant":
                 # Process assistant message
-                tokens, loss_mask, attention_mask = self._process_message_tokens(
-                    messages, i, i + 1, is_assistant=True, enable_thinking=enable_thinking, tools=tools
-                )
+                tokens, loss_mask, attention_mask = self._process_message_tokens(messages, i, i + 1, is_assistant=True, enable_thinking=enable_thinking, tools=tools)
                 concat_tokens.extend(tokens)
                 concat_loss_mask.extend(loss_mask)
                 concat_attention_mask.extend(attention_mask)
@@ -269,9 +260,7 @@ class MultiTurnSFTDataset(Dataset):
                 ed = i + 1
                 while ed < len(messages) and messages[ed]["role"] == "tool":
                     ed += 1
-                tokens, loss_mask, attention_mask = self._process_message_tokens(
-                    messages, st, ed, enable_thinking=enable_thinking, tools=tools
-                )
+                tokens, loss_mask, attention_mask = self._process_message_tokens(messages, st, ed, enable_thinking=enable_thinking, tools=tools)
                 concat_tokens.extend(tokens)
                 concat_loss_mask.extend(loss_mask)
                 concat_attention_mask.extend(attention_mask)
@@ -280,9 +269,7 @@ class MultiTurnSFTDataset(Dataset):
                 # Process user or system message
                 if cur_messages["role"] == "system" and i != 0:
                     raise ValueError("System message should be the first message")
-                tokens, loss_mask, attention_mask = self._process_message_tokens(
-                    messages, i, i + 1, enable_thinking=enable_thinking, tools=tools
-                )
+                tokens, loss_mask, attention_mask = self._process_message_tokens(messages, i, i + 1, enable_thinking=enable_thinking, tools=tools)
                 concat_tokens.extend(tokens)
                 concat_loss_mask.extend(loss_mask)
                 concat_attention_mask.extend(attention_mask)
@@ -291,9 +278,7 @@ class MultiTurnSFTDataset(Dataset):
                 raise ValueError(f"Unknown role: {cur_messages['role']}")
 
         # Validate and convert tokens
-        input_ids, loss_mask, attention_mask = self._validate_and_convert_tokens(
-            full_tokens[0], concat_tokens, concat_loss_mask, concat_attention_mask
-        )
+        input_ids, loss_mask, attention_mask = self._validate_and_convert_tokens(full_tokens[0], concat_tokens, concat_loss_mask, concat_attention_mask)
 
         # Handle sequence length
         sequence_length = input_ids.shape[0]

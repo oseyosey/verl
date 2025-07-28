@@ -1,8 +1,6 @@
 Multinode Training
 ==================
 
-Last updated: 06/10/2025.
-
 .. _wuxibin89: https://github.com/wuxibin89
 
 Author: `Xibin Wu <https://github.com/wuxibin89>`_, `Yusheng Su <https://yushengsu-thu.github.io/>`_.
@@ -175,6 +173,7 @@ Now you can submit the training job to the Ray cluster which is available at ``l
         trainer.project_name=ppo_training \
         trainer.experiment_name=qwen-2.5-7B \
         trainer.val_before_train=False \
+        trainer.default_hdfs_dir=null \
         trainer.n_gpus_per_node=8 \
         trainer.nnodes=2 \
         trainer.default_local_dir=/checkpoints \
@@ -453,6 +452,8 @@ slurm_script.sh
     echo "IP Head: $ip_head"
 
     # make sure we set environment variables before Ray initialization
+    # If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
+    # export VLLM_ATTENTION_BACKEND=XFORMERS
 
     # Print out all env variables
     printenv
@@ -570,7 +571,7 @@ slurm_script.sh
         critic.model.fsdp_config.optimizer_offload=False \
         algorithm.kl_ctrl.kl_coef=0.0001 \
         trainer.critic_warmup=0 \
-        trainer.logger='["console","wandb"]' \
+        trainer.logger=['console','wandb'] \
         trainer.project_name='verl_example' \
         trainer.experiment_name='Qwen2.5-32B-Instruct_function_rm' \
         trainer.n_gpus_per_node=${SLURM_GPUS_PER_NODE} \
