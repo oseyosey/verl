@@ -110,6 +110,47 @@ _METRIC_FUNCS: dict[str, Callable[[str, str], float]] = {
 }
 
 # -----------------------------------------------------------------------------
+# Utility: filter reference list based on *extra_info*
+# -----------------------------------------------------------------------------
+
+
+def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
+    """Return a possibly reduced list of *refs* according to *extra_info*.
+
+    Supported options in *extra_info*:
+    • ``target_gt`` – a string; keep only references that exactly match it.
+    • ``filter_gt_by_last_prompt_token`` (bool) **and** ``prompt`` – extract the
+      last whitespace‐delimited token of *prompt* (lower‐cased) and keep only
+      references that contain that token (after simple regex tokenisation).
+
+    If filtering removes **all** references, the original list is returned so
+    that scoring never fails with an empty pool.
+    """
+
+    if not extra_info or not isinstance(extra_info, dict):
+        return refs
+
+    # 1. Exact target string
+    tgt = extra_info.get("target_gt")
+    if isinstance(tgt, str):
+        subset = [r for r in refs if r == tgt]
+        if subset:
+            return subset
+
+    # 2. Last prompt token heuristic
+    if extra_info.get("filter_gt_by_prompt_token") and "prompt" in extra_info:
+        prompt_txt = str(extra_info["prompt"]).strip()
+        if prompt_txt:
+            # TODO: Currently this is assuming we hardcoded. the last token of the prompt as the target token.
+            # TODO: This may not be correct. 
+            last_tok = prompt_txt.split()[-1].lower()
+            subset = [r for r in refs if last_tok in _tokenize(r)]
+            if subset:
+                return subset
+
+    return refs
+
+# -----------------------------------------------------------------------------
 # Optional Levenshtein distance metric (normalised similarity)
 # -----------------------------------------------------------------------------
 
@@ -223,6 +264,7 @@ def compute_score(
 
     solutions: List[str] = [solution_str]  # Expect exactly one entry
     refs: List[str] = [ground_truth] if isinstance(ground_truth, str) else list(ground_truth or [])
+    refs = _filter_refs(refs, extra_info)
 
     if not solutions or not refs:
         return 0.0
@@ -317,7 +359,17 @@ def compute_score_batched(
     if measure_fn is None:
         raise ValueError(f"Unknown lexical metric '{metric}'.")
 
-    if metric == "bm25" and _HAS_BM25:
+    needs_filter = False
+    if extra_infos is not None:
+        for ei in extra_infos:
+            if isinstance(ei, dict) and (
+                "target_gt" in ei or ei.get("filter_gt_by_prompt_token")
+            ):
+                needs_filter = True
+                break
+
+    # Fast path (shared reference pool) when no per-sample filtering required
+    if not needs_filter and metric == "bm25" and _HAS_BM25:
         docs_tokens = [_tokenize(r) for r in flattened_refs]
         bm25_index = BM25Okapi(docs_tokens)
         ideal_scores = [
@@ -348,12 +400,26 @@ def compute_score_batched(
 
         measure_fn = bm25_batch
 
-    for ds, sol, ei in zip(data_sources, solution_strs, defaults):
-        best = 0.0
-        for ref in flattened_refs:
-            best = max(best, measure_fn(sol, ref))
-            if best == 1.0:
-                break
-        results.append(best)
+    if not needs_filter:
+        for ds, sol, ei in zip(data_sources, solution_strs, defaults):
+            best = 0.0
+            for ref in flattened_refs:
+                best = max(best, measure_fn(sol, ref))
+                if best == 1.0:
+                    break
+            results.append(best)
+        return results
 
+    # Slow path: delegate to single-sample scorer so that per-example filtering applies.
+    for ds, sol, gt, ei in zip(data_sources, solution_strs, ground_truths, defaults):
+        results.append(
+            compute_score(
+                data_source=ds,
+                solution_str=sol,
+                ground_truth=gt,
+                extra_info=ei,
+                metric=metric,
+            )
+        )
+ 
     return results 

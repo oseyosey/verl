@@ -1,7 +1,5 @@
-Hardware Resource Needed for RL
-===============================
-
-Last updated: 06/25/2025.
+Resource Needed for verl RL(LoRA)
+==============================
 
 Since RL requires more resources compared to regular training, 
 determining how much resources are needed to successfully run it before training 

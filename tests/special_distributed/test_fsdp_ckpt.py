@@ -36,16 +36,12 @@ def test_fsdp_ckpt(strategy="fsdp"):
     config = Qwen2Config(num_hidden_layers=1)
 
     with torch.device("cuda"):
-        model = AutoModelForCausalLM.from_config(
-            config=config, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
-        )
+        model = AutoModelForCausalLM.from_config(config=config, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
         model = model.to(device="cuda")
 
     # Wrap model with FSDP
     if strategy == "fsdp":
-        mixed_precision = MixedPrecision(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-        )
+        mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32)
 
         model = FSDP(
             model,
@@ -56,9 +52,7 @@ def test_fsdp_ckpt(strategy="fsdp"):
             device_mesh=device_mesh,
         )
     else:
-        mp_policy = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, cast_forward_inputs=True
-        )
+        mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32, cast_forward_inputs=True)
         fsdp_kwargs = {
             "mesh": device_mesh,
             "mp_policy": mp_policy,
@@ -70,9 +64,7 @@ def test_fsdp_ckpt(strategy="fsdp"):
 
     # Create checkpoint manager
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    checkpoint_manager = FSDPCheckpointManager(
-        model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, tokenizer=tokenizer
-    )
+    checkpoint_manager = FSDPCheckpointManager(model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, tokenizer=tokenizer)
 
     # Generate sample input
     batch_size = 2

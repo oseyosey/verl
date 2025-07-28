@@ -6,13 +6,22 @@ import datasets
 from verl.utils.fs import copy, makedirs  # type: ignore
 
 
-def transform_example(example, idx: int, split: str, metric: str = 'bm25'):
+def transform_example(example, idx: int, split: str, metric: str = 'bm25', verbose: bool = True):
     """Convert raw record into verl RL parquet compatible format.
 
     The *metric* argument specifies which lexical metric (bm25 / ratio / levenshtein)
     should be applied at training-time.  It is stored in ``extra_info`` so that the
     reward loader can forward it to ``lexical.compute_score``.
     """
+    extra_info = {
+        'split': split,
+        'index': idx,
+        'metric': metric,
+    }
+    if 'assistant_prefix' in example:
+        if verbose:
+            print(f"[transform_example] Adding assistant_prefix for idx={idx}: {example['assistant_prefix']}")
+        extra_info['assistant_prefix'] = example['assistant_prefix']
 
     return {
         'data_source': example.get('data_source', 'lexical_match_custom'),
@@ -22,11 +31,7 @@ def transform_example(example, idx: int, split: str, metric: str = 'bm25'):
             'style': 'model',
             'ground_truth': example['ground_truths'],  # keep list
         },
-        'extra_info': {
-            'split': split,
-            'index': idx,
-            'metric': metric,
-        },
+        'extra_info': extra_info,
     }
 
 

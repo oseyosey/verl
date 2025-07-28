@@ -15,16 +15,7 @@
 
 from verl.utils.import_utils import deprecated
 
-
-def default_compute_score(
-    data_source,
-    solution_str,
-    ground_truth,
-    extra_info=None,
-    sandbox_fusion_url=None,
-    concurrent_semaphore=None,
-    memory_limit_mb=None,
-):
+def default_compute_score(data_source, solution_str, ground_truth, extra_info=None, sandbox_fusion_url=None, concurrent_semaphore=None):
     """Compute the score for a given solution based on the data source.
 
     Args:
@@ -45,7 +36,7 @@ def default_compute_score(
         from . import gsm8k
 
         res = gsm8k.compute_score(solution_str, ground_truth)
-    elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval", "HuggingFaceH4/MATH-500"]:
+    elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval"]:
         from . import math
 
         res = math.compute_score(solution_str, ground_truth)
@@ -77,9 +68,7 @@ def default_compute_score(
             from . import sandbox_fusion
 
             # Pass the URL directly, ground_truth likely contains test cases here
-            res = sandbox_fusion.compute_score(
-                sandbox_fusion_url, concurrent_semaphore, memory_limit_mb, solution_str, ground_truth, continuous=True
-            )
+            res = sandbox_fusion.compute_score(sandbox_fusion_url, concurrent_semaphore, solution_str, ground_truth, continuous=True)
         else:
             # If no sandbox URL is provided, fall back to prime_code or raise error
             from . import prime_code
@@ -90,22 +79,27 @@ def default_compute_score(
         from . import geo3k
 
         res = geo3k.compute_score(solution_str, ground_truth)
-    elif data_source in [
-        "searchR1_nq",
-        "searchR1_triviaqa",
-        "searchR1_popqa",
-        "searchR1_hotpotqa",
-        "searchR1_2wikimultihopqa",
-        "searchR1_musique",
-        "searchR1_bamboogle",
-    ]:
+    elif data_source in ["searchR1_nq", "searchR1_triviaqa", "searchR1_popqa", "searchR1_hotpotqa", "searchR1_2wikimultihopqa", "searchR1_musique", "searchR1_bamboogle"]:
         from . import search_r1_like_qa_em
 
         res = search_r1_like_qa_em.compute_score(solution_str, ground_truth)
-    elif data_source in [
-        "lexical_match_custom",
-        "lexical_match",
-    ]:
+    elif data_source.startswith("embedding_match"):
+        # Embedding-based semantic similarity reward (FastText etc.)
+        from . import embedding
+
+        # Users may still override via extra_info, but we pass the metric flag
+        metric_from_extra = None
+        if isinstance(extra_info, dict):
+            metric_from_extra = extra_info.get("metric") or extra_info.get("lexical_metric")
+
+        res = embedding.compute_score(
+            data_source=data_source,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            extra_info=extra_info,
+        )
+    elif data_source.startswith("lexical_match"):
+        
         # Generic lexical similarity reward based on BM25 / Levenshtein, etc.
         from . import lexical
         # Allow callers to override the lexical metric via ``extra_info``.  For
@@ -127,28 +121,18 @@ def default_compute_score(
 
     if isinstance(res, dict):
         return res
-    elif isinstance(res, int | float | bool):
+    elif isinstance(res, (int, float, bool)):
         return float(res)
     else:
         return float(res[0])
 
 
 @deprecated("verl.utils.reward_score.default_compute_score")
-def _default_compute_score(
-    data_source,
-    solution_str,
-    ground_truth,
-    extra_info=None,
-    sandbox_fusion_url=None,
-    concurrent_semaphore=None,
-    memory_limit_mb=None,
-):
+def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None, sandbox_fusion_url=None, concurrent_semaphore=None):
     """
     Legacy function API to be deprecated. Please use `default_compute_score` instead.
     """
-    return default_compute_score(
-        data_source, solution_str, ground_truth, extra_info, sandbox_fusion_url, concurrent_semaphore, memory_limit_mb
-    )
+    return default_compute_score(data_source, solution_str, ground_truth, extra_info, sandbox_fusion_url, concurrent_semaphore)
 
 
 __all__ = ["default_compute_score"]

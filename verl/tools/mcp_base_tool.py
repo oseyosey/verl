@@ -15,13 +15,12 @@
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from uuid import uuid4
 
 from fastmcp.exceptions import ClientError
 
 from verl.tools.utils.mcp_clients.McpClientManager import ClientManager
-from verl.utils.rollout_trace import rollout_trace_op
 
 from .base_tool import BaseTool
 from .schemas import OpenAIFunctionToolSchema
@@ -60,7 +59,7 @@ class MCPBaseTool(BaseTool):
         }
         return instance_id
 
-    async def _call_tool(self, instance_id, parameters) -> tuple[str, dict]:
+    async def _call_tool(self, instance_id, parameters) -> Tuple[str, dict]:
         err_msg = ""
         try:
             call_tool_result = await ClientManager.call_tool(self.name, parameters, self.timeout)
@@ -76,8 +75,7 @@ class MCPBaseTool(BaseTool):
         metadata["api_request_error"] += err_msg
         return result, metadata
 
-    @rollout_trace_op
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[str, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str, float, dict]:
         if self.name == "" or self.name is None or parameters is None:
             error_msg = "Error: 'parameters' is missing or empty."
             logger.error(f"[MCPTool] {error_msg} Received tool name: {self.name}, parameters: {parameters}")
@@ -90,12 +88,7 @@ class MCPBaseTool(BaseTool):
             self._instance_dict[instance_id]["reward"].append(result_text.strip())
 
             # Convert metadata to metrics
-            metrics = {
-                "query_count": metadata.get("query_count", 0),
-                "status": metadata.get("status", "unknown"),
-                "total_results": metadata.get("total_results", 0),
-                "api_request_error": metadata.get("api_request_error"),
-            }
+            metrics = {"query_count": metadata.get("query_count", 0), "status": metadata.get("status", "unknown"), "total_results": metadata.get("total_results", 0), "api_request_error": metadata.get("api_request_error")}
 
             return result_text, 0.0, metrics
 
@@ -111,6 +104,6 @@ class MCPBaseTool(BaseTool):
         if instance_id in self._instance_dict:
             del self._instance_dict[instance_id]
 
-    def _parse_tool_result(self, content: list) -> tuple[str, dict]:
+    def _parse_tool_result(self, content: list) -> Tuple[str, dict]:
         tools_content = [part.text for part in filter(lambda x: x.type == "text", content)]
         return " ".join(tools_content), {}
