@@ -268,7 +268,8 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             else:
 
                 def replace_lora_wrapper(k):
-                    stacked_params = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+                    stacked_params = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens"] # * Key Error Issue on "embed_tokens.weight"
+                                                                                                                                   # * https://github.com/volcengine/verl/issues/2160
                     if any([k.endswith(f"{s}.weight") for s in stacked_params]):
                         return k.replace(".weight", ".base_layer.weight")
                     if any([k.endswith(f"{s}.bias") for s in stacked_params]):

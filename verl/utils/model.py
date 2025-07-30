@@ -209,8 +209,18 @@ def compute_position_id_with_mask(mask):
 
 
 def convert_weight_keys(state_dict: Dict[str, torch.Tensor], model: PreTrainedModel):
-    # convert state dict keys: https://github.com/huggingface/transformers/pull/38385
+
+    # # convert state dict keys: https://github.com/huggingface/transformers/pull/38385
+    # # For Llama-style models the original parameter names (with leading
+    # # "model." prefix) already match what vLLM expects.  Running the
+    # # checkpoint-conversion mapping would strip that prefix and cause
+    # # mismatches such as the KeyError on "embed_tokens.weight".  We therefore
+    # # short-circuit here.
+    # if "Llama" in model.__class__.__name__:
+    #     return state_dict
+
     if not hasattr(model, "_checkpoint_conversion_mapping"):
+        # No conversion mapping available; keep keys unchanged.
         return state_dict
 
     reverse_key_mapping = {v: k for k, v in model._checkpoint_conversion_mapping.items()}

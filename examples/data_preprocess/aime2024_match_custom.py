@@ -80,7 +80,7 @@ def transform_example(example, idx: int, split: str, match_type: str = "lexical"
     # few samples when *verbose* is enabled.
     if verbose and idx < 3:
         print("[transform_example] Preview of transformed record (truncated):")
-        print(json.dumps(record, indent=2, ensure_ascii=False))
+        print(json.dumps(record, indent=2, ensure_ascii=False)[:1000])
 
     return record
 
@@ -115,6 +115,15 @@ def main():
         action="store_true",
         help="Enable verbose logging for debugging the preprocessing pipeline.",
     )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help=(
+            "Optional target dataset length. Must be greater than the original "
+            "dataset size; records are duplicated cyclically to reach this size."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -131,13 +140,30 @@ def main():
 
     ds_transformed = ds.map(transform_fn, with_indices=True, remove_columns=ds.column_names)
 
+    # ------------------------------------------------------------------
+    # Optional up-sampling to reach desired number of samples
+    # ------------------------------------------------------------------
+
+    if args.num_samples is not None:
+        if args.num_samples < len(ds_transformed):
+            raise ValueError(
+                "--num_samples must be greater than or equal to the original dataset size "
+                f"({len(ds_transformed)}). Got {args.num_samples}."
+            )
+        if args.num_samples > len(ds_transformed):
+            if args.verbose:
+                print(
+                    f"[main] Upsampling dataset from {len(ds_transformed)} to {args.num_samples} samples by cyclic duplication."
+                )
+
+            # Create cyclic index list
+            indices = [i % len(ds_transformed) for i in range(args.num_samples)]
+            ds_transformed = ds_transformed.select(indices)
+
     if args.verbose:
-        print("\n[main] Finished transformation – verifying headers of first record:")
-        first_rec = ds_transformed[0]
-        print("  Top-level keys:", list(first_rec.keys()))
-        print("  prompt roles:", [m["role"] for m in first_rec["prompt"]])
-        print("  reward_model keys:", list(first_rec["reward_model"].keys()))
-        print("  extra_info keys:", list(first_rec["extra_info"].keys()))
+        print("\n[main] Finished transformation – preview of transformed record(s):")
+        preview_recs = ds_transformed[:3]
+        print(json.dumps(preview_recs, indent=2, ensure_ascii=False))
 
     # Persist to local disk.
     output_dir = os.path.expanduser(args.output_dir)
