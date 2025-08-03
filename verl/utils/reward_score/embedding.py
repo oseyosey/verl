@@ -50,7 +50,7 @@ try:
         _EMBED_DIM = _MODEL.get_dimension()
     else:
         raise ModuleNotFoundError  # trigger gensim fallback
-except (ModuleNotFoundError, ValueError):
+except (ModuleNotFoundError, ValueError, ImportError):
     try:
         # Fallback to gensim-downloader – small subset (~1 GB) but easy.
         import gensim.downloader as api  # type: ignore
@@ -86,9 +86,15 @@ def _word_vec(word: str) -> np.ndarray:
 
     if _MODEL is None:
         return np.zeros(_EMBED_DIM, dtype=np.float32)
+    # Support both the official fastText API and gensim KeyedVectors fallback
     try:
-        return _MODEL.get_word_vector(word)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 – different backends raise various errors
+        if hasattr(_MODEL, "get_word_vector"):
+            return _MODEL.get_word_vector(word)  # type: ignore[attr-defined]
+        # gensim KeyedVectors expose vectors via __getitem__ or get_vector
+        if hasattr(_MODEL, "get_vector"):
+            return _MODEL.get_vector(word)  # type: ignore[attr-defined]
+        return _MODEL[word]  # type: ignore[index]
+    except (KeyError, Exception):  # noqa: BLE001
         return np.zeros(_EMBED_DIM, dtype=np.float32)
 
 
