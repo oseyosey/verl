@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import inspect
 import logging
 import os
@@ -268,8 +269,41 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             else:
 
                 def replace_lora_wrapper(k):
-                    stacked_params = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens"] # * Key Error Issue on "embed_tokens.weight"
-                                                                                                                                   # * https://github.com/volcengine/verl/issues/2160
+                    # * Key Error Issue on "embed_tokens.weight" for LLama Causal LM
+                    # * https://github.com/volcengine/verl/issues/2160
+                    # Dynamically choose stacked_params depending on model architecture.
+                    # For Llama models, embed_tokens need to be handled specially.
+                    from transformers import LlamaForCausalLM
+                    # Try to also import vLLM's Llama implementation (module path differs from HF)
+                    try:
+                        from vllm.model_executor.models.llama import LlamaForCausalLM as VLLMLlamaForCausalLM  # type: ignore
+                    except (ImportError, ModuleNotFoundError):
+                        VLLMLlamaForCausalLM = None
+
+                    llama_classes = tuple(
+                        cls for cls in (LlamaForCausalLM, VLLMLlamaForCausalLM) if cls is not None
+                    )
+                    if isinstance(model, llama_classes):
+                        stacked_params = [
+                            "q_proj",
+                            "k_proj",
+                            "v_proj",
+                            "o_proj",
+                            "gate_proj",
+                            "up_proj",
+                            "down_proj",
+                            "embed_tokens",
+                        ]
+                    else:
+                        stacked_params = [
+                            "q_proj",
+                            "k_proj",
+                            "v_proj",
+                            "o_proj",
+                            "gate_proj",
+                            "up_proj",
+                            "down_proj",
+                        ]
                     if any([k.endswith(f"{s}.weight") for s in stacked_params]):
                         return k.replace(".weight", ".base_layer.weight")
                     if any([k.endswith(f"{s}.bias") for s in stacked_params]):
