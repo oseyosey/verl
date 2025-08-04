@@ -35,8 +35,21 @@ def _get_current_mem_info(unit: str = "GB", precision: int = 2) -> Tuple[str]:
     # use get_torch_device().mem_get_info to profile device memory
     # since vllm's sleep mode works below pytorch
     # see https://github.com/vllm-project/vllm/pull/11743#issuecomment-2754338119
-    mem_free, mem_total = get_torch_device().mem_get_info()
-    mem_used = mem_total - mem_free
+    try:
+        mem_free, mem_total = get_torch_device().mem_get_info()
+        mem_used = mem_total - mem_free
+    except RuntimeError as e:
+        # Handle cases where querying GPU memory triggers a CUDA error (e.g., uncorrectable ECC)
+        # Fall back to torch.cuda.memory_stats which is more robust but less precise
+        import torch
+        stats = torch.cuda.memory_stats(get_torch_device())
+        mem_total = torch.cuda.get_device_properties(get_torch_device()).total_memory
+        mem_used = stats.get('reserved_bytes.active', 0)
+        mem_free = mem_total - mem_used
+        if "ECC" in str(e):
+            print("Warning: Skipped mem_get_info due to ECC error: ", e)
+        else:
+            print("Warning: mem_get_info failed, using fallback: ", e)
     mem_allocated = f"{mem_allocated / divisor:.{precision}f}"
     mem_reserved = f"{mem_reserved / divisor:.{precision}f}"
     mem_used = f"{mem_used / divisor:.{precision}f}"

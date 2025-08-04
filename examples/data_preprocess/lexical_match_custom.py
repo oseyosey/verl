@@ -6,7 +6,7 @@ import datasets
 from verl.utils.fs import copy, makedirs  # type: ignore
 
 
-def transform_example(example, idx: int, split: str, metric: str = 'bm25', verbose: bool = True):
+def transform_example(example, idx: int, split: str, metric: str = 'bm25', include_target_gt: bool = False, verbose: bool = True):
     """Convert raw record into verl RL parquet compatible format.
 
     The *metric* argument specifies which lexical metric (bm25 / ratio / levenshtein)
@@ -18,6 +18,17 @@ def transform_example(example, idx: int, split: str, metric: str = 'bm25', verbo
         'index': idx,
         'metric': metric,
     }
+    # Optionally include explicit target reference for reward functions
+    if include_target_gt:
+        # Select per-example ground-truth by index so that each sample has a single reference.
+        gts = example.get('ground_truths')
+        if isinstance(gts, list) and gts:
+            target = gts[idx % len(gts)]
+        else:
+            target = gts  # fallback – either str or None
+        if verbose:
+            print(f"[transform_example] Added target_gt for idx={idx}: {target}")
+        extra_info['target_gt'] = target
     if 'assistant_prefix' in example:
         if verbose:
             print(f"[transform_example] Adding assistant_prefix for idx={idx}: {example['assistant_prefix']}")
@@ -41,13 +52,15 @@ def main():
     parser.add_argument('--output_dir', default='~/data/lexical_match_custom/rl', help='Where to save parquet file')
     parser.add_argument('--hdfs_dir', default=None, help='Optional HDFS path to mirror parquet file')
     parser.add_argument('--metric', choices=['bm25', 'ratio', 'levenshtein'], default='bm25', help='Lexical similarity metric to be used during RL training')
+    parser.add_argument('--include_target_gt', action='store_true', help="If set, include the ground-truth list as 'target_gt' in extra_info.")
+    parser.add_argument('--verbose', action='store_true', help="If set, print verbose output.")
     args = parser.parse_args()
 
     dataset = datasets.load_from_disk(os.path.expanduser(args.hf_dataset_dir))
 
     # Map transformation with selected metric
     from functools import partial
-    transform_fn = partial(transform_example, split='train', metric=args.metric)
+    transform_fn = partial(transform_example, split='train', metric=args.metric, include_target_gt=args.include_target_gt, verbose=args.verbose)
     dataset = dataset.map(transform_fn, with_indices=True, remove_columns=dataset.column_names)
 
     output_dir = os.path.expanduser(args.output_dir)

@@ -124,13 +124,15 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
     if not extra_info or not isinstance(extra_info, dict):
         return refs
-
+        
+    # 1. Exact target string
     tgt = extra_info.get("target_gt")
     if isinstance(tgt, str):
         subset = [r for r in refs if r == tgt]
         if subset:
             return subset
 
+    # 2. Last prompt token heuristic
     if extra_info.get("filter_gt_by_prompt_token") and "prompt" in extra_info:
         prompt_txt = str(extra_info["prompt"]).strip()
         if prompt_txt:

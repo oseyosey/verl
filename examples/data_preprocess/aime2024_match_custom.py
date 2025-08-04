@@ -8,7 +8,7 @@ import json
 from verl.utils.fs import copy, makedirs  # type: ignore
 
 
-def transform_example(example, idx: int, split: str, match_type: str = "lexical", metric: str = "bm25", verbose: bool = True):
+def transform_example(example, idx: int, split: str, match_type: str = "lexical", metric: str = "bm25", include_target_gt: bool = False, verbose: bool = True):
     """Convert AIME 2024 record into verl RL parquet compatible format.
 
     Parameters
@@ -42,6 +42,13 @@ def transform_example(example, idx: int, split: str, match_type: str = "lexical"
         "index": idx,
         "metric": metric,
     }
+
+    # Optionally include the ground-truth answer as a dedicated target reference
+    # for reward functions that support the 'target_gt' hint.
+    if include_target_gt:
+        if verbose:
+            print(f"[transform_example] Added target_gt for idx={idx}: {str(example['Solution']).strip()[:100]}")
+        extra_info["target_gt"] = str(example["Solution"]).strip()
 
     # Preserve optional assistant prefix if upstream pipeline inserted one.
     # NOT USED IN THIS DATASET.
@@ -101,6 +108,11 @@ def main():
         help="Similarity metric to store in extra_info (e.g. bm25, ratio, levenshtein, embedding).",
     )
     parser.add_argument(
+        "--include_target_gt",
+        action="store_true",
+        help="If set, include the ground-truth solution as 'target_gt' in extra_info so that reward functions can filter references.",
+    )
+    parser.add_argument(
         "--output_dir",
         default="~/data/aime2024_match_custom/rl",
         help="Directory where the output Parquet file will be saved.",
@@ -135,6 +147,7 @@ def main():
         split="train",
         match_type=args.match_type,
         metric=args.metric,
+        include_target_gt=args.include_target_gt,
         verbose=args.verbose,
     )
 
