@@ -131,6 +131,7 @@ def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
         return refs
 
     # 1. Exact target string
+    # pdb.set_trace()
     tgt = extra_info.get("target_gt")
     if isinstance(tgt, str):
         subset = [r for r in refs if r == tgt]
