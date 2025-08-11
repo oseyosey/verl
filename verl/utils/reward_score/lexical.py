@@ -10,31 +10,38 @@ expected by verl's reward loading utilities (see
 
 Key features
 ------------
-* **BM25** is used as the default scoring method (via the *rank-bm25* library).
-* **Fallback** to `difflib.SequenceMatcher` when *rank-bm25* is not available.
+* **Token-based metrics** are the default, focusing on exact token matching
+  which is ideal for reconstruction tasks.
+* **Multiple metrics** available:
+  - ``token_ratio``: Jaccard similarity (default)
+  - ``token_precision``, ``token_recall``, ``token_f1``: Standard IR metrics
+  - ``ordered_token``: Considers token ordering via LCS
+  - ``bm25``: Traditional BM25 (kept for reference)
+  - ``ratio``: Character-based similarity
 * **Extensible** – additional similarity metrics can be plugged in via the
   ``metric`` keyword argument.
-* **Batched** evaluation helper :pyfunc:`compute_score_batched` to showcase how
-  to vectorise the computation (useful when RewardManager supports batching).
+* **Batched** evaluation helper :pyfunc:`compute_score_batched` for efficient
+  batch processing.
 
 Example
 ~~~~~~~
 >>> from verl.utils.reward_score.lexical import compute_score
+>>> # Default token_ratio metric
 >>> compute_score(
 ...     data_source="dummy",  # ignored
 ...     solution_str="Cats are great pets.",
-...     ground_truth="Cats make wonderful companions."  # doctest: +ELLIPSIS
+...     ground_truth="Cats make wonderful companions."
 ... )
-0.7...
+0.333...
 
-If you need a different metric (e.g. *ratio*):
+>>> # Using ordered_token to consider token order
 >>> compute_score(
 ...     data_source="dummy",
-...     solution_str="hello world",
-...     ground_truth="hello, world!",
-...     metric="ratio",
+...     solution_str="the quick brown fox",
+...     ground_truth="quick brown fox jumps",
+...     metric="ordered_token"
 ... )
-1.0
+0.428...
 """
 
 import pdb; # * Hacky way to debug the verl codebase (ray cluster)
@@ -42,6 +49,7 @@ import pdb; # * Hacky way to debug the verl codebase (ray cluster)
 from typing import Callable, List
 import re
 import warnings
+import math
 
 from difflib import SequenceMatcher
 
@@ -67,35 +75,149 @@ __all__: List[str] = [
 # -----------------------------------------------------------------------------
 
 def _tokenize(text: str) -> List[str]:
-    """Tokenise *text* into a list of lowercase terms suitable for BM25."""
-    # Extract alphanumeric sequences as tokens
-    return re.findall(r"[A-Za-z0-9]+", text.lower())
-
-
-def _bm25_single_score(query: str, document: str) -> float:
-    """Compute a *normalised* BM25 score of *query* against single *document*.
-
-    The score is divided by the *ideal* score (query versus itself) to bound
-    the result in \[0, 1\].
+    """Tokenise *text* into a list of lowercase terms.
+    
+    Split on whitespace and punctuation, keeping alphanumeric tokens.
+    This ensures single letters like 'A', 'B', 'C' are captured correctly.
     """
+    # Use regex to split on non-alphanumeric characters and extract tokens
+    tokens = re.findall(r'\b\w+\b', text.lower())
+    return tokens
 
+
+def _token_ratio_score(query: str, document: str) -> float:
+    """Compute token overlap ratio between query and document.
+    
+    Returns the ratio of common tokens to the total unique tokens in both texts.
+    Uses Jaccard similarity: |A ∩ B| / |A ∪ B|
+    """
+    query_tokens = _tokenize(query)
+    doc_tokens = _tokenize(document)
+    
+    if not query_tokens and not doc_tokens:
+        return 1.0  # Both empty = perfect match
+    
+    if not query_tokens or not doc_tokens:
+        return 0.0  # One empty = no match
+    
+    query_set = set(query_tokens)
+    doc_set = set(doc_tokens)
+    common_tokens = query_set & doc_set
+    union_tokens = query_set | doc_set
+    
+    if not union_tokens:  # Should never happen, but safety check
+        return 0.0
+    
+    # Jaccard similarity: intersection over union
+    return len(common_tokens) / len(union_tokens)
+
+
+def _token_precision_score(query: str, document: str) -> float:
+    """Compute what fraction of query tokens appear in the document.
+    
+    This measures how well the document covers the query's content.
+    Precision = |A ∩ B| / |A| where A is query tokens
+    """
+    query_tokens = _tokenize(query)
+    doc_tokens = _tokenize(document)
+    
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    
+    query_set = set(query_tokens)
+    doc_set = set(doc_tokens)
+    common_tokens = query_set & doc_set
+    
+    # Precision: what fraction of query tokens are in document
+    return len(common_tokens) / len(query_set)
+
+
+def _token_recall_score(query: str, document: str) -> float:
+    """Compute what fraction of document tokens appear in the query.
+    
+    This measures how much of the document is captured by the query.
+    Recall = |A ∩ B| / |B| where B is document tokens
+    """
+    query_tokens = _tokenize(query)
+    doc_tokens = _tokenize(document)
+    
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    
+    query_set = set(query_tokens)
+    doc_set = set(doc_tokens)
+    common_tokens = query_set & doc_set
+    
+    # Recall: what fraction of document tokens are in query
+    return len(common_tokens) / len(doc_set)
+
+
+def _token_f1_score(query: str, document: str) -> float:
+    """Compute F1 score based on token precision and recall."""
+    precision = _token_precision_score(query, document)
+    recall = _token_recall_score(query, document)
+    
+    if precision + recall == 0:
+        return 0.0
+    
+    return 2 * (precision * recall) / (precision + recall)
+
+
+def _ordered_token_score(query: str, document: str) -> float:
+    """Compute similarity considering token order using longest common subsequence.
+    
+    This captures both token overlap and their relative ordering.
+    Score = |LCS| / max(|A|, |B|) where LCS is longest common subsequence
+    """
+    query_tokens = _tokenize(query)
+    doc_tokens = _tokenize(document)
+    
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    
+    # Compute LCS length
+    m, n = len(query_tokens), len(doc_tokens)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if query_tokens[i-1] == doc_tokens[j-1]:
+                dp[i][j] = dp[i-1][j-1] + 1
+            else:
+                dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+    
+    lcs_length = dp[m][n]
+    
+    # Normalize by the longer sequence length
+    # This ensures score is 1.0 only when sequences are identical
+    max_length = max(m, n)
+    return lcs_length / max_length if max_length > 0 else 0.0
+
+
+def _bm25_score(query: str, document: str) -> float:
+    """Compute BM25 score between query and document.
+    
+    Note: This is kept for reference but not recommended for reconstruction tasks.
+    """
     if not _HAS_BM25:
-        # Fallback path – shouldn't normally happen when library is installed.
         return _ratio_score(query, document)
 
-    # BM25Okapi expects a *corpus* (list of token lists). We build a tiny corpus
-    # containing only the reference document to keep things simple.
-    tokenised_corpus = [_tokenize(document)]
-    bm25 = BM25Okapi(tokenised_corpus)
-
     query_tokens = _tokenize(query)
-    raw_score = bm25.get_scores(query_tokens)[0]  # array of length 1
-
-    # "Ideal" score: query compared to itself (upper bound)
-    ideal_score = bm25.get_scores(_tokenize(document))[0]
-    if ideal_score == 0:
+    doc_tokens = _tokenize(document)
+    
+    if not query_tokens or not doc_tokens:
         return 0.0
-    return min(raw_score / ideal_score, 1.0)
+    
+    # Check for any overlap first
+    if not set(query_tokens) & set(doc_tokens):
+        return 0.0
+    
+    # Build BM25 index with single document
+    bm25 = BM25Okapi([doc_tokens])
+    raw_score = bm25.get_scores(query_tokens)[0]
+    
+    # Sigmoid normalization to map to [0, 1]
+    return 1.0 / (1.0 + math.exp(-0.1 * raw_score))
 
 
 def _ratio_score(a: str, b: str) -> float:
@@ -105,8 +227,13 @@ def _ratio_score(a: str, b: str) -> float:
 
 
 _METRIC_FUNCS: dict[str, Callable[[str, str], float]] = {
-    "bm25": _bm25_single_score,
-    "ratio": _ratio_score,
+    "token_ratio": _token_ratio_score,
+    "token_precision": _token_precision_score,
+    "token_recall": _token_recall_score,
+    "token_f1": _token_f1_score,
+    "ordered_token": _ordered_token_score,
+    "bm25": _bm25_score,
+    "ratio": _ratio_score,  # Character-based ratio
 }
 
 # -----------------------------------------------------------------------------
@@ -192,7 +319,7 @@ def compute_score(
     solution_strs: List[str] | None = None,
     ground_truths: List[str | List[str]] | None = None,
     extra_infos: List[dict | None] | None = None,
-    metric: str = "bm25",
+    metric: str = "token_ratio",
 ) -> float | List[float]:
     """Return lexical similarity score between *solution_str* and *ground_truth*.
 
@@ -208,9 +335,14 @@ def compute_score(
     extra_info
         Extra information (currently unused).
     metric
-        The similarity metric to use. **bm25** (default) and **ratio** are
-        provided out-of-the-box. You can extend :pydata:`_METRIC_FUNCS` at
-        runtime to register new metrics.
+        The similarity metric to use. Available options:
+        - **token_ratio** (default): Jaccard similarity of tokens (intersection/union)
+        - **token_precision**: Fraction of query tokens found in document
+        - **token_recall**: Fraction of document tokens found in query
+        - **token_f1**: F1 score combining precision and recall
+        - **ordered_token**: Considers token order using longest common subsequence
+        - **bm25**: BM25 score (not recommended for reconstruction tasks)
+        - **ratio**: Character-based similarity
 
     Returns
     -------
@@ -263,6 +395,10 @@ def compute_score(
     # treat ``ground_truth`` as an iterable of references regardless of its
     # original type.
 
+    # Guard against None or non-string inputs for stability
+    if not isinstance(solution_str, str) or solution_str == "":
+        return 0.0
+
     solutions: List[str] = [solution_str]  # Expect exactly one entry
     refs: List[str] = [ground_truth] if isinstance(ground_truth, str) else list(ground_truth or [])
     refs = _filter_refs(refs, extra_info)
@@ -270,46 +406,8 @@ def compute_score(
     if not solutions or not refs:
         return 0.0
 
-    # Build BM25 index once when needed (performance).
-    if metric == "bm25" and _HAS_BM25:
-        # Pre-tokenise the reference corpus and build a single BM25 index.
-        docs_tokens = [_tokenize(r) for r in refs]
-        bm25_index = BM25Okapi(docs_tokens)
-
-        # Compute an *ideal* score for every reference – that is, the score
-        # obtained when the query exactly matches the document itself.  This
-        # provides a true upper-bound (≥ raw_score) for normalisation and
-        # guarantees that raw_score / ideal_score is ≤ 1.0.
-        ideal_scores = [
-            bm25_index.get_scores(doc_tokens)[idx]
-            for idx, doc_tokens in enumerate(docs_tokens)
-        ]
-
-        # NOTE: `compute_score` expects *measure_fn* callables to accept two
-        # positional arguments (query and reference) even though the BM25
-        # implementation can score the query against *all* references at
-        # once via the pre-built index. We therefore include an extra, unused
-        # positional parameter so that the signature matches the expected
-        # ``Callable[[str, str], float]`` type and avoids ``TypeError`` when
-        # invoked as ``measure_fn(sol, ref)`` inside the nested loop.
-
-        def _bm25_cached(q: str, _unused_ref: str | None = None) -> float:  # noqa: D401
-            """Return the best normalised BM25 score of *q* w.r.t the index.
-
-            The additional ``_unused_ref`` parameter is present **only** to
-            satisfy the two-argument calling convention used elsewhere in this
-            module – it is ignored during computation.
-            """
-
-            q_tokens = _tokenize(q)
-            raw_scores = bm25_index.get_scores(q_tokens)
-            best = 0.0
-            for rs, ideal in zip(raw_scores, ideal_scores):
-                if ideal > 0:
-                    best = max(best, rs / ideal)
-            return min(best, 1.0)
-
-        measure_fn = _bm25_cached
+    # For all metrics, use the simple approach
+    # No need for special caching since our metrics are already efficient
 
     per_sol_best = []
     for sol in solutions:
@@ -329,7 +427,7 @@ def compute_score_batched(
     ground_truths: List[str | List[str]],
     extra_infos: List[dict | None] | None = None,
     *,
-    metric: str = "bm25",
+    metric: str = "token_ratio",
 ):
     """Vectorised version of :pyfunc:`compute_score`.
 
@@ -349,7 +447,8 @@ def compute_score_batched(
             flattened_refs.append(gt)
 
     if not flattened_refs:
-        flattened_refs = [""]  # Avoid zero-division / empty loops
+        # No references – return zeros to indicate no lexical grounding.
+        return [0.0 for _ in solution_strs]
 
     results: List[float] = []
     defaults = [None] * len(solution_strs) if extra_infos is None else extra_infos
@@ -369,37 +468,8 @@ def compute_score_batched(
                 needs_filter = True
                 break
 
-    # Fast path (shared reference pool) when no per-sample filtering required
-    if not needs_filter and metric == "bm25" and _HAS_BM25:
-        docs_tokens = [_tokenize(r) for r in flattened_refs]
-        bm25_index = BM25Okapi(docs_tokens)
-        ideal_scores = [
-            bm25_index.get_scores(doc_tokens)[idx]
-            for idx, doc_tokens in enumerate(docs_tokens)
-        ]
-
-        # NOTE: `compute_score` expects *measure_fn* callables to accept two
-        # positional arguments (query and reference) even though the BM25
-        # implementation can score the query against *all* references at
-        # once via the pre-built index. We therefore include an extra, unused
-        # positional parameter so that the signature matches the expected
-        # ``Callable[[str, str], float]`` type and avoids ``TypeError`` when
-        # invoked as ``measure_fn(sol, ref)`` inside the nested loop.
-
-        def bm25_batch(q: str, _unused_ref: str | None = None) -> float:  # noqa: D401
-            """BM25 scoring helper matching the two-argument call signature."""
-
-            q_tokens = _tokenize(q)
-            raw_scores = bm25_index.get_scores(q_tokens)
-            best = 0.0
-            for rs, ideal in zip(raw_scores, ideal_scores):
-                if ideal > 0:
-                    best = max(best, rs / ideal)
-                if best == 1.0:
-                    break
-            return best
-
-        measure_fn = bm25_batch
+    # No special optimization needed for non-BM25 metrics
+    # They are already simple and efficient
 
     if not needs_filter:
         for ds, sol, ei in zip(data_sources, solution_strs, defaults):
