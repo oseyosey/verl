@@ -87,6 +87,49 @@ class TaskRunner:
 
         trust_remote_code = config.data.get("trust_remote_code", False)
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
+
+        # * Base Model Chat Template * #
+        # If using a base model without a built-in chat template, allow providing one via config
+        # and otherwise fall back to a simple ChatML-style template so RL datasets that expect
+        # conversational formatting can tokenize correctly.
+        from omegaconf import OmegaConf
+        chat_template_cfg = OmegaConf.select(config, "data.chat_template")
+        try:
+            needs_template = (getattr(tokenizer, "chat_template", None) in (None, ""))
+        except Exception:
+            needs_template = True
+
+        if needs_template:
+            template_text = None
+            if chat_template_cfg:
+                # If a path is provided, read the template from file; otherwise treat as raw template text
+                try:
+                    if isinstance(chat_template_cfg, str) and os.path.isfile(chat_template_cfg):
+                        with open(chat_template_cfg, "r") as f:
+                            template_text = f.read()
+                    else:
+                        template_text = str(chat_template_cfg)
+                except Exception:
+                    template_text = str(chat_template_cfg)
+            else:
+                # Minimal generic template compatible with HF chat templating
+                # Jinja template for the chat template
+                template_text = (
+                    "{% for message in messages %}"
+                    "{% if message['role'] == 'system' %}System: {{ message['content'] }}\n"
+                    "{% elif message['role'] == 'user' %}User: {{ message['content'] }}\n"
+                    "{% elif message['role'] == 'assistant' %}Assistant: {{ message['content'] }}\n"
+                    "{% elif message['role'] == 'tool' %}Tool: {{ message['content'] }}\n"
+                    "{% endif %}"
+                    "{% endfor %}"
+                    "{% if add_generation_prompt %}Assistant:{% endif %}"
+                )
+
+            try:
+                tokenizer.chat_template = template_text
+            except Exception:
+                # If setting fails, leave as-is; downstream will still raise a clear error
+                pass
         # Used for multimodal LLM, could be None
         processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
