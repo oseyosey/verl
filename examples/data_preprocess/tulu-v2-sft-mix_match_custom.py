@@ -173,7 +173,6 @@ def main():
         default=None,
         help=(
             "Comma-separated list of dataset names (values from the 'dataset' field) to filter from. "
-            "Defaults to 'math-500'. Matching is case-insensitive and allows substring matches."
         ),
     )
     parser.add_argument(
