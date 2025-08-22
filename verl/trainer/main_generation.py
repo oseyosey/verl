@@ -65,6 +65,48 @@ def main_task(config):
     trust_remote_code = config.data.get("trust_remote_code", False)
     tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
 
+    # * Base Model Chat Template * #
+    # If using a base model without a built-in chat template, allow providing one via config
+    # and otherwise fall back to a simple ChatML-style template so RL datasets that expect
+    # conversational formatting can tokenize correctly.
+    chat_template_cfg = OmegaConf.select(config, "data.chat_template")
+    try:
+        needs_template = (getattr(tokenizer, "chat_template", None) in (None, ""))
+    except Exception:
+        needs_template = True
+
+    if needs_template:
+        template_text = None
+        if chat_template_cfg:
+            # If a path is provided, read the template from file; otherwise treat as raw template text
+            try:
+                if isinstance(chat_template_cfg, str) and os.path.isfile(chat_template_cfg):
+                    with open(chat_template_cfg, "r") as f:
+                        template_text = f.read()
+                else:
+                    template_text = str(chat_template_cfg)
+            except Exception:
+                template_text = str(chat_template_cfg)
+        else:
+            # Minimal generic template compatible with HF chat templating
+            # Jinja template for the chat template
+            template_text = (
+                "{% for message in messages %}"
+                "{% if message['role'] == 'system' %}System: {{ message['content'] }}\n"
+                "{% elif message['role'] == 'user' %}User: {{ message['content'] }}\n"
+                "{% elif message['role'] == 'assistant' %}Assistant: {{ message['content'] }}\n"
+                "{% elif message['role'] == 'tool' %}Tool: {{ message['content'] }}\n"
+                "{% endif %}"
+                "{% endfor %}"
+                "{% if add_generation_prompt %}Assistant:{% endif %}"
+            )
+
+        try:
+            tokenizer.chat_template = template_text
+        except Exception:
+            # If setting fails, leave as-is; downstream will still raise a clear error
+            pass
+
     if config.rollout.temperature == 0.0:
         assert config.data.n_samples == 1, "When temperature=0, n_samples must be 1."
     assert config.data.n_samples >= 1, "n_samples should always >= 1"
@@ -74,6 +116,32 @@ def main_task(config):
     chat_lst = dataset[config.data.prompt_key].tolist()
 
     chat_lst = [chat.tolist() for chat in chat_lst]
+
+    # Optionally filter out prompts that exceed a maximum token length, similar to RLHFDataset
+    if OmegaConf.select(config, "data.filter_overlong_prompts"):
+        max_prompt_length = OmegaConf.select(config, "data.max_prompt_length") or 1024
+
+        def conversation_token_length(conversation_messages) -> int:
+            # Build raw prompt string using the chat template, then tokenize to count tokens
+            raw_prompt = tokenizer.apply_chat_template(
+                conversation_messages,
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            return len(tokenizer(raw_prompt, add_special_tokens=False)["input_ids"])
+
+        keep_mask = []
+        for messages in chat_lst:
+            try:
+                keep_mask.append(conversation_token_length(messages) <= max_prompt_length)
+            except Exception:
+                # If any failure occurs in templating/tokenization, conservatively keep the sample
+                keep_mask.append(True)
+
+        before_n = len(chat_lst)
+        chat_lst = [c for c, k in zip(chat_lst, keep_mask) if k]
+        dataset = dataset.loc[keep_mask].reset_index(drop=True)
+        print(f"Filtering prompts longer than {max_prompt_length} tokens: {before_n} -> {len(chat_lst)}")
 
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
