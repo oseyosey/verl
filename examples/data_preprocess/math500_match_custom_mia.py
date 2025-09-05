@@ -21,6 +21,12 @@ Usage:
   
   # Custom subset size and embedding matching
   python math500_match_custom_mia.py --subset_size 300 --match_type embedding --mia
+  
+  # LLM judge with custom prompt template and thinking mode
+  python math500_match_custom_mia.py --match_type llm_judge --llm_prompt_template detailed_rubric --subset_size 100
+  
+  # LLM judge without thinking mode (faster, lower cost)
+  python math500_match_custom_mia.py --match_type llm_judge --no_llm_thinking --llm_max_tokens 256 --subset_size 100
 """
 
 import argparse
@@ -34,6 +40,15 @@ import datasets
 
 from verl.utils.fs import copy, makedirs  # type: ignore
 
+try:
+    from .llm_judge_prompts import get_prompt_template, list_available_templates
+except ImportError:
+    # Handle case when running as script directly
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(__file__))
+    from llm_judge_prompts import get_prompt_template, list_available_templates
+
 
 def transform_example(
     example,
@@ -43,6 +58,13 @@ def transform_example(
     metric: str = "bm25",
     include_target_gt: bool = False,
     verbose: bool = True,
+    llm_model: str = "gemini/gemini-2.5-flash",
+    llm_temperature: float = 0.6,
+    llm_max_tokens: int = 4096
+    llm_timeout: int = 30,
+    llm_prompt_template: str = "default",
+    llm_thinking_enabled: bool = True,
+    llm_thinking_budget: int = 2048,
 ):
     """Convert MATH-500 record into verl RL parquet compatible format.
 
@@ -54,7 +76,7 @@ def transform_example(
         Index within the split – used to create a stable identifier.
     split : str
         Data split name (e.g. "test"). 
-    match_type : {"lexical", "embedding"}
+    match_type : {"lexical", "embedding", "llm_judge"}
         Determines which reward type will be used at training-time and thus
         controls the ``data_source`` string expected by
         ``verl.utils.reward_score.default_compute_score``.
@@ -64,9 +86,9 @@ def transform_example(
         Print extra information while transforming – useful for debugging.
     """
 
-    if match_type not in {"lexical", "embedding"}:
+    if match_type not in {"lexical", "embedding", "llm_judge"}:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical' or 'embedding'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', or 'llm_judge'."
         )
 
     # Construct *extra_info* section – accessible by the reward loader so that
@@ -94,14 +116,38 @@ def transform_example(
             )
         extra_info["assistant_prefix"] = example["assistant_prefix"]
 
+    # Add LLM judge specific configuration
+    if match_type == "llm_judge":
+        # Add problem context for LLM judge prompt formatting
+        extra_info["problem"] = str(example["problem"]).strip()
+        
+        # Add LLM configuration
+        extra_info["model"] = llm_model
+        extra_info["temperature"] = llm_temperature
+        extra_info["max_tokens"] = llm_max_tokens
+        extra_info["timeout"] = llm_timeout
+        extra_info["thinking_enabled"] = llm_thinking_enabled
+        extra_info["thinking_budget"] = llm_thinking_budget
+        
+        # Add prompt template for LLM judge from configuration
+        if "prompt_template" not in extra_info:
+            try:
+                extra_info["prompt_template"] = get_prompt_template(llm_prompt_template)
+            except ValueError as e:
+                if verbose:
+                    print(f"[transform_example] Warning: {e}. Using default template.")
+                extra_info["prompt_template"] = get_prompt_template("default")
+
     # Decide on *data_source* according to requested matching type.
     if match_type == "lexical":
         data_source = "lexical_match_custom"
-    elif match_type == "embedding":  # match_type == "embedding"
+    elif match_type == "embedding":
         data_source = "embedding_match_custom"
+    elif match_type == "llm_judge":
+        data_source = "llm_judge_custom"
     else:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical' or 'embedding'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', or 'llm_judge'."
         )
 
     # Build the verl record.
@@ -332,9 +378,9 @@ def main():
     )
     parser.add_argument(
         "--match_type",
-        choices=["lexical", "embedding"],
+        choices=["lexical", "embedding", "llm_judge"],
         default="lexical",
-        help="Choose reward type: lexical (BM25 / ratio / etc.) or embedding similarity.",
+        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (FastText similarity), or llm_judge (LLM-as-a-judge evaluation).",
     )
     parser.add_argument(
         "--metric",
@@ -407,6 +453,51 @@ def main():
         help="Optional HDFS directory to mirror the Parquet file to.",
     )
     parser.add_argument(
+        "--llm_model",
+        default="gemini/gemini-2.5-flash",
+        help="LLM model to use for llm_judge reward type (default: gemini/gemini-2.5-flash).",
+    )
+    parser.add_argument(
+        "--llm_temperature",
+        type=float,
+        default=0.6,
+        help="Temperature for LLM judge (default: 0.6 for balanced scoring).",
+    )
+    parser.add_argument(
+        "--llm_max_tokens",
+        type=int,
+        default=4096,
+        help="Maximum tokens for LLM judge response including thinking tokens (default: 4096).",
+    )
+    parser.add_argument(
+        "--llm_timeout",
+        type=int,
+        default=30,
+        help="Timeout for LLM API calls in seconds (default: 30).",
+    )
+    parser.add_argument(
+        "--llm_prompt_template",
+        default="default",
+        help=f"LLM prompt template to use (default: default). Available: {', '.join(list_available_templates())}",
+    )
+    parser.add_argument(
+        "--llm_thinking_enabled",
+        action="store_true",
+        default=True,
+        help="Enable thinking mode for Gemini models for better reasoning (default: True).",
+    )
+    parser.add_argument(
+        "--no_llm_thinking",
+        action="store_true",
+        help="Disable thinking mode for Gemini models (overrides --llm_thinking_enabled).",
+    )
+    parser.add_argument(
+        "--llm_thinking_budget",
+        type=int,
+        default=2048,
+        help="Number of tokens allocated for thinking in Gemini models (default: 2048).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging for debugging the preprocessing pipeline.",
@@ -414,6 +505,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Handle thinking mode logic
+    if args.no_llm_thinking:
+        args.llm_thinking_enabled = False
+    
     # Load dataset
     ds_full = datasets.load_dataset(args.dataset_path, split=args.dataset_split)
     
@@ -467,6 +562,13 @@ def main():
         metric=args.metric,
         include_target_gt=args.include_target_gt,
         verbose=args.verbose,
+        llm_model=args.llm_model,
+        llm_temperature=args.llm_temperature,
+        llm_max_tokens=args.llm_max_tokens,
+        llm_timeout=args.llm_timeout,
+        llm_prompt_template=args.llm_prompt_template,
+        llm_thinking_enabled=args.llm_thinking_enabled,
+        llm_thinking_budget=args.llm_thinking_budget,
     )
 
     if args.mia:
