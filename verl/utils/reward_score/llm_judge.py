@@ -133,6 +133,51 @@ def _extract_reward_score(response_text: str) -> Optional[float]:
     return None
 
 
+def _tokenize(text: str) -> List[str]:
+    """Tokenise text into a list of lowercase terms.
+    
+    Split on whitespace and punctuation, keeping alphanumeric tokens.
+    This ensures single letters like 'A', 'B', 'C' are captured correctly.
+    """
+    # Use regex to split on non-alphanumeric characters and extract tokens
+    tokens = re.findall(r'\b\w+\b', text.lower())
+    return tokens
+
+
+def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
+    """Return a possibly reduced list of refs according to extra_info.
+
+    Supported options in extra_info:
+    • target_gt – a string; keep only references that exactly match it.
+    • filter_gt_by_prompt_token (bool) and prompt – extract the
+      last whitespace‐delimited token of prompt (lower‐cased) and keep only
+      references that contain that token (after simple regex tokenisation).
+
+    If filtering removes all references, the original list is returned so
+    that scoring never fails with an empty pool.
+    """
+    if not extra_info or not isinstance(extra_info, dict):
+        return refs
+
+    # 1. Exact target string
+    tgt = extra_info.get("target_gt")
+    if isinstance(tgt, str):
+        subset = [r for r in refs if r == tgt]
+        if subset:
+            return subset
+
+    # 2. Last prompt token heuristic
+    if extra_info.get("filter_gt_by_prompt_token") and "prompt" in extra_info:
+        prompt_txt = str(extra_info["prompt"]).strip()
+        if prompt_txt:
+            last_tok = prompt_txt.split()[-1].lower()
+            subset = [r for r in refs if last_tok in _tokenize(r)]
+            if subset:
+                return subset
+
+    return refs
+
+
 def _call_llm_single(
     prompt: str,
     model: str = DEFAULT_MODEL,
@@ -528,6 +573,8 @@ def compute_score(
         # Check if we can use batch processing
         use_batch = True
         first_info = None
+        needs_filter = False
+        
         for info in infos:
             if info is None:
                 use_batch = False
@@ -539,6 +586,11 @@ def compute_score(
                   info.get("temperature") != first_info.get("temperature")):
                 use_batch = False
                 break
+            # Check if filtering is needed
+            if isinstance(info, dict) and (
+                "target_gt" in info or info.get("filter_gt_by_prompt_token")
+            ):
+                needs_filter = True
         
         if use_batch and first_info and len(sols) > 1:
             # Batch processing
@@ -547,19 +599,27 @@ def compute_score(
             # Individual processing
             results = []
             for sol, gt, info in zip(sols, gts, infos):
-                if isinstance(gt, list):
-                    # If ground_truth is a list, take the first one (or could do max over all)
-                    gt_str = gt[0] if gt else ""
-                else:
-                    gt_str = str(gt) if gt else ""
+                # Handle multiple references
+                refs = [gt] if isinstance(gt, str) else list(gt or [])
+                refs = _filter_refs(refs, info)
                 
-                try:
-                    score = _single_llm_judge_score(str(sol), gt_str, info)
-                except Exception as e:
-                    logger.error(f"Error computing LLM judge score: {e}")
-                    score = 0.0
+                if not refs:
+                    results.append(0.0)
+                    continue
                 
-                results.append(score)
+                # Evaluate against all references and take max
+                best_score = 0.0
+                for ref in refs:
+                    try:
+                        score = _single_llm_judge_score(str(sol), ref, info)
+                        best_score = max(best_score, score)
+                        if best_score == 1.0:  # Early exit if perfect score
+                            break
+                    except Exception as e:
+                        logger.error(f"Error computing LLM judge score: {e}")
+                        continue
+                
+                results.append(best_score)
             
             return results
     
@@ -567,17 +627,26 @@ def compute_score(
     if solution_str is None or ground_truth is None:
         return 0.0
     
-    # Handle ground_truth as list (take first element)
-    if isinstance(ground_truth, list):
-        gt_str = ground_truth[0] if ground_truth else ""
-    else:
-        gt_str = str(ground_truth)
+    # Handle ground_truth as list
+    refs = [ground_truth] if isinstance(ground_truth, str) else list(ground_truth or [])
+    refs = _filter_refs(refs, extra_info)
     
-    try:
-        return _single_llm_judge_score(str(solution_str), gt_str, extra_info)
-    except Exception as e:
-        logger.error(f"Error computing LLM judge score: {e}")
+    if not refs:
         return 0.0
+    
+    # Evaluate against all references and take max
+    best_score = 0.0
+    for ref in refs:
+        try:
+            score = _single_llm_judge_score(str(solution_str), ref, extra_info)
+            best_score = max(best_score, score)
+            if best_score == 1.0:  # Early exit if perfect score
+                break
+        except Exception as e:
+            logger.error(f"Error computing LLM judge score for reference: {e}")
+            continue
+    
+    return best_score
 
 
 def _compute_score_batch(
@@ -588,13 +657,16 @@ def _compute_score_batch(
     """
     Compute scores for a batch of examples using batch LLM API calls.
     
+    Handles multiple references per solution efficiently by batching all
+    (solution, reference) pairs into a single LLM call.
+    
     Args:
         solution_strs: List of candidate solutions
-        ground_truths: List of reference solutions
+        ground_truths: List of reference solutions (each can be str or List[str])
         extra_infos: List of extra info dictionaries
         
     Returns:
-        List of scores between 0 and 1
+        List of scores between 0 and 1 (max score for each solution)
     """
     if not solution_strs or not extra_infos:
         return []
@@ -615,45 +687,59 @@ def _compute_score_batch(
     model_kwargs = {k: v for k, v in llm_config.items() 
                    if k not in ["model", "temperature", "max_tokens", "timeout", "max_retries", "retry_delay", "thinking_enabled", "thinking_budget"]}
     
-    # Format all prompts
+    # Build all (solution_idx, reference) pairs with filtering
     prompts = []
-    for i, (sol, gt, info) in enumerate(zip(solution_strs, ground_truths, extra_infos)):
-        if isinstance(gt, list):
-            gt_str = gt[0] if gt else ""
-        else:
-            gt_str = str(gt) if gt else ""
+    prompt_mappings = []  # (solution_idx, reference_idx)
+    
+    for sol_idx, (sol, gt, info) in enumerate(zip(solution_strs, ground_truths, extra_infos)):
+        # Handle multiple references
+        refs = [gt] if isinstance(gt, str) else list(gt or [])
+        refs = _filter_refs(refs, info)
+        
+        if not refs:
+            logger.warning(f"No references after filtering for solution {sol_idx}")
+            # If no references after filtering, we'll use empty ref
+            refs = [""]
         
         prompt_template = info.get("prompt_template", DEFAULT_PROMPT_TEMPLATE)
         problem = info.get("problem", "")
         
-        try:
-            formatted_prompt = _format_prompt(prompt_template, problem, gt_str, str(sol))
-            prompts.append(formatted_prompt)
-        except Exception as e:
-            logger.error(f"Error formatting prompt for example {i}: {e}")
-            prompts.append("")  # Will result in None response
+        # Create prompts for all references of this solution
+        for ref_idx, ref in enumerate(refs):
+            try:
+                formatted_prompt = _format_prompt(prompt_template, problem, ref, str(sol))
+                prompts.append(formatted_prompt)
+                prompt_mappings.append((sol_idx, ref_idx))
+            except Exception as e:
+                logger.error(f"Error formatting prompt for solution {sol_idx}, ref {ref_idx}: {e}")
+                prompts.append("")  # Will result in None response
+                prompt_mappings.append((sol_idx, ref_idx))
     
-    # Call LLM batch API
+    # Call LLM batch API with all prompts at once
     responses = _call_llm_batch(
         prompts, model, temperature, max_tokens,
         timeout, max_retries, retry_delay, thinking_enabled, thinking_budget, **model_kwargs
     )
     
-    # Extract scores
-    scores = []
-    for i, (response, sol, gt) in enumerate(zip(responses, solution_strs, ground_truths)):
+    # Group scores by solution and take max
+    solution_scores = [0.0] * len(solution_strs)
+    
+    for prompt_idx, response in enumerate(responses):
+        sol_idx, ref_idx = prompt_mappings[prompt_idx]
+        
         if response is None:
-            logger.warning(f"LLM call failed for example {i}, returning 0.0")
+            logger.warning(f"LLM call failed for solution {sol_idx}, ref {ref_idx}")
             score = 0.0
         else:
             score = _extract_reward_score(response)
             if score is None:
-                logger.warning(f"Failed to extract score from response {i}: {response[:100]}...")
+                logger.warning(f"Failed to extract score from response for sol {sol_idx}, ref {ref_idx}: {response[:100]}...")
                 score = 0.0
         
-        scores.append(score)
+        # Update max score for this solution
+        solution_scores[sol_idx] = max(solution_scores[sol_idx], score)
     
-    return scores
+    return solution_scores
 
 
 def compute_score_batched(
