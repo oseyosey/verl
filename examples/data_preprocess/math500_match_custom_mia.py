@@ -60,7 +60,7 @@ def transform_example(
     verbose: bool = True,
     llm_model: str = "gemini/gemini-2.5-flash",
     llm_temperature: float = 0.6,
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = 4096,
     llm_timeout: int = 30,
     llm_prompt_template: str = "default",
     llm_thinking_enabled: bool = True,
@@ -137,6 +137,21 @@ def transform_example(
                 if verbose:
                     print(f"[transform_example] Warning: {e}. Using default template.")
                 extra_info["prompt_template"] = get_prompt_template("default")
+        
+        # Debug logging for LLM configuration
+        if verbose:
+            llm_config = {
+                "problem": extra_info.get("problem"),
+                "model": extra_info.get("model"),
+                "temperature": extra_info.get("temperature"),
+                "max_tokens": extra_info.get("max_tokens"),
+                "timeout": extra_info.get("timeout"),
+                "thinking_enabled": extra_info.get("thinking_enabled"),
+                "thinking_budget": extra_info.get("thinking_budget"),
+                "prompt_template": extra_info.get("prompt_template")
+            }
+            print(f"[transform_example] LLM configuration added to extra_info for idx={idx}:")
+            print(json.dumps(llm_config, indent=2))
 
     # Decide on *data_source* according to requested matching type.
     if match_type == "lexical":
