@@ -126,6 +126,16 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
             ground_truth=ground_truth,
             extra_info=extra_info,
         )
+    elif data_source.startswith("bleurt_match"):
+        # BLEURT-based semantic similarity reward
+        from . import bleurt
+
+        res = bleurt.compute_score(
+            data_source=data_source,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            extra_info=extra_info,
+        )
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 
