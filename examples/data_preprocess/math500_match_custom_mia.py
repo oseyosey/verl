@@ -65,6 +65,11 @@ def transform_example(
     llm_prompt_template: str = "default",
     llm_thinking_enabled: bool = True,
     llm_thinking_budget: int = 2048,
+    # BLEURT-specific parameters
+    bleurt_checkpoint: str = "lucadiliello/BLEURT-20",
+    bleurt_length_penalty: str = "none",
+    bleurt_length_threshold: float = 1.5,
+    bleurt_device: str = None,
 ):
     """Convert MATH-500 record into verl RL parquet compatible format.
 
@@ -76,7 +81,7 @@ def transform_example(
         Index within the split – used to create a stable identifier.
     split : str
         Data split name (e.g. "test"). 
-    match_type : {"lexical", "embedding", "llm_judge"}
+    match_type : {"lexical", "embedding", "llm_judge", "bleurt"}
         Determines which reward type will be used at training-time and thus
         controls the ``data_source`` string expected by
         ``verl.utils.reward_score.default_compute_score``.
@@ -86,9 +91,9 @@ def transform_example(
         Print extra information while transforming – useful for debugging.
     """
 
-    if match_type not in {"lexical", "embedding", "llm_judge"}:
+    if match_type not in {"lexical", "embedding", "llm_judge", "bleurt"}:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', or 'llm_judge'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'llm_judge', or 'bleurt'."
         )
 
     # Construct *extra_info* section – accessible by the reward loader so that
@@ -98,6 +103,15 @@ def transform_example(
         "index": idx,
         "metric": metric,
     }
+    
+    # Preserve is_member flag if present in the example
+    if "is_member" in example:
+        extra_info["is_member"] = example["is_member"]
+    
+    # Preserve other MIA-related fields for proper ID tracking
+    for field in ["original_idx", "original_problem_idx", "original_solution_idx"]:
+        if field in example:
+            extra_info[field] = example[field]
 
     # Optionally include the ground-truth answer as a dedicated target reference
     # for reward functions that support the 'target_gt' hint.
@@ -153,6 +167,25 @@ def transform_example(
             print(f"[transform_example] LLM configuration added to extra_info for idx={idx}:")
             print(json.dumps(llm_config, indent=2))
 
+    # Add BLEURT specific configuration
+    if match_type == "bleurt":
+        extra_info["length_penalty"] = bleurt_length_penalty
+        extra_info["length_threshold"] = bleurt_length_threshold
+        extra_info["bleurt_checkpoint"] = bleurt_checkpoint
+        if bleurt_device:
+            extra_info["device"] = bleurt_device
+        
+        # Debug logging for BLEURT configuration
+        if verbose:
+            bleurt_config = {
+                "length_penalty": extra_info.get("length_penalty"),
+                "length_threshold": extra_info.get("length_threshold"), 
+                "bleurt_checkpoint": extra_info.get("bleurt_checkpoint"),
+                "device": extra_info.get("device")
+            }
+            print(f"[transform_example] BLEURT configuration added to extra_info for idx={idx}:")
+            print(json.dumps(bleurt_config, indent=2))
+
     # Decide on *data_source* according to requested matching type.
     if match_type == "lexical":
         data_source = "lexical_match_custom"
@@ -160,9 +193,11 @@ def transform_example(
         data_source = "embedding_match_custom"
     elif match_type == "llm_judge":
         data_source = "llm_judge_custom"
+    elif match_type == "bleurt":
+        data_source = "bleurt_match_custom"
     else:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', or 'llm_judge'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'llm_judge', or 'bleurt'."
         )
 
     # Build the verl record.
@@ -367,6 +402,13 @@ def create_non_member_from_unused(dataset, member_indices: List[int], num_pairs:
     return non_member_examples, subsampled_member_indices
 
 
+def add_member_flag(example, idx):
+    """Add is_member=True flag to an example."""
+    example_copy = dict(example)
+    example_copy["is_member"] = True
+    return example_copy
+
+
 def _write_jsonl(path: str, rows: List[dict]) -> None:
     """Write a list of dictionaries to a JSONL file."""
     with open(path, "w", encoding="utf-8") as f:
@@ -393,9 +435,9 @@ def main():
     )
     parser.add_argument(
         "--match_type",
-        choices=["lexical", "embedding", "llm_judge"],
+        choices=["lexical", "embedding", "llm_judge", "bleurt"],
         default="lexical",
-        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (FastText similarity), or llm_judge (LLM-as-a-judge evaluation).",
+        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (FastText similarity), llm_judge (LLM-as-a-judge evaluation), or bleurt (BLEURT-based evaluation).",
     )
     parser.add_argument(
         "--metric",
@@ -513,6 +555,28 @@ def main():
         help="Number of tokens allocated for thinking in Gemini models (default: 2048).",
     )
     parser.add_argument(
+        "--bleurt_checkpoint",
+        default="lucadiliello/BLEURT-20",
+        help="BLEURT model checkpoint to use (default: lucadiliello/BLEURT-20).",
+    )
+    parser.add_argument(
+        "--bleurt_length_penalty",
+        choices=["none", "ratio", "sqrt", "log"],
+        default="none",
+        help="Length penalty type for BLEURT (default: none).",
+    )
+    parser.add_argument(
+        "--bleurt_length_threshold",
+        type=float,
+        default=1.5,
+        help="Length threshold for applying penalty in BLEURT (default: 1.5).",
+    )
+    parser.add_argument(
+        "--bleurt_device",
+        default=None,
+        help="Device to run BLEURT on ('cuda', 'cpu', or None for auto-detect).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging for debugging the preprocessing pipeline.",
@@ -584,6 +648,10 @@ def main():
         llm_prompt_template=args.llm_prompt_template,
         llm_thinking_enabled=args.llm_thinking_enabled,
         llm_thinking_budget=args.llm_thinking_budget,
+        bleurt_checkpoint=args.bleurt_checkpoint,
+        bleurt_length_penalty=args.bleurt_length_penalty,
+        bleurt_length_threshold=args.bleurt_length_threshold,
+        bleurt_device=args.bleurt_device,
     )
 
     if args.mia:
@@ -593,7 +661,10 @@ def main():
         
         # Create member data from subsampled dataset
         print(f"Creating member data from {len(ds_members_subset)} subsampled examples...")
-        ds_members = ds_members_subset.map(transform_fn, with_indices=True, remove_columns=ds_members_subset.column_names)
+        
+        # Add is_member field to member examples before transformation
+        ds_members_with_flag = ds_members_subset.map(add_member_flag, with_indices=True)
+        ds_members = ds_members_with_flag.map(transform_fn, with_indices=True, remove_columns=ds_members_with_flag.column_names)
         
         # Create non-member data using selected method
         if args.mia_nonmember_method == "random_pairing":
@@ -628,7 +699,9 @@ def main():
         ds_non_members = ds_non_members_raw.map(transform_fn, with_indices=True, remove_columns=ds_non_members_raw.column_names)
         
         # Create member data from (potentially subsampled) dataset
-        ds_members = ds_members_subset.map(transform_fn, with_indices=True, remove_columns=ds_members_subset.column_names)
+        # Add is_member field to member examples before transformation
+        ds_members_with_flag = ds_members_subset.map(add_member_flag, with_indices=True)
+        ds_members = ds_members_with_flag.map(transform_fn, with_indices=True, remove_columns=ds_members_with_flag.column_names)
         
         # Combine member and non-member data for the final training set
         ds_combined = datasets.concatenate_datasets([ds_members, ds_non_members])
