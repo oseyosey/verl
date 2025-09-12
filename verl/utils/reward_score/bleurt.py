@@ -119,15 +119,32 @@ def _compute_length_penalty(reference: str, candidate: str,
     """
     Compute length penalty factor based on reference and candidate lengths.
     Returns a value between 0 and 1, where 1 means no penalty.
+    
+    The penalty is applied if the output length falls outside the range
+    [1/threshold, threshold] * reference_length. This creates a "sweet spot"
+    where outputs of similar length to the reference are not penalized.
+    
+    Available penalty types:
+    - none: No penalty (always returns 1.0)
+    - ratio: Linear penalty based on length ratio
+    - sqrt: Square root of ratio for milder penalty
+    - log: Logarithmic penalty based on length ratio
+    - quadratic: Quadratic penalty (ratio^2) for stronger penalization
+    - exponential: Exponential penalty (e^(-ratio)) for aggressive penalization
     """
     ref_len = len(reference.split())
     out_len = len(candidate.split())
     
-    # No penalty if output is shorter than threshold * reference length
-    if out_len <= threshold * ref_len:
+    # Calculate both ratios to handle both longer and shorter outputs
+    ratio_short = out_len / ref_len  # < 1/threshold means too short
+    ratio_long = ref_len / out_len   # < 1/threshold means too long
+    
+    # No penalty if output length is within acceptable range
+    if ratio_short >= 1/threshold and ratio_short <= threshold:
         return 1.0
         
-    ratio = ref_len / out_len
+    # Use the more extreme ratio for penalty calculation
+    ratio = min(ratio_long, ratio_short)
     
     if penalty_type == "none":
         return 1.0
@@ -137,7 +154,14 @@ def _compute_length_penalty(reference: str, candidate: str,
         return min(1.0, ratio ** 0.5)
     elif penalty_type == "log":
         import math
-        return min(1.0, math.log(1 + ref_len) / math.log(1 + out_len))
+        return min(1.0, math.log(1 + min(ref_len, out_len)) / math.log(1 + max(ref_len, out_len)))
+    elif penalty_type == "quadratic":
+        return min(1.0, ratio ** 2)  # Stronger penalty using square of ratio
+    elif penalty_type == "exponential":
+        import math
+        # Exponential decay: e^(-x) where x is (1 - ratio)
+        # This creates a very sharp dropoff outside the acceptable range
+        return min(1.0, math.exp(-(1 - ratio)))
     else:
         warnings.warn(f"Unknown length penalty type: {penalty_type}, using 'none'")
         return 1.0
@@ -219,10 +243,15 @@ def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
     if not extra_info or not isinstance(extra_info, dict):
         return refs
         
-    # 1. Exact target string
+    # 1. Exact target string(s)
     tgt = extra_info.get("target_gt")
     if isinstance(tgt, str):
         subset = [r for r in refs if r == tgt]
+        if subset:
+            return subset
+    elif isinstance(tgt, list):
+        # Handle list of target strings - keep references that match any of them
+        subset = [r for r in refs if r in tgt]
         if subset:
             return subset
 
