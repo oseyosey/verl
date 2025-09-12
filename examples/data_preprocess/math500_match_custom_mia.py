@@ -17,7 +17,10 @@ Usage:
   python math500_match_custom_mia.py --mia --mia_nonmember_method unused_examples
   
   # With MIA data generation (original random pairing method)
-  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing
+  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode full_random
+  
+  # With MIA data generation (same problem with random solutions)
+  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode same_problem
   
   # Custom subset size and embedding matching
   python math500_match_custom_mia.py --subset_size 300 --match_type embedding --mia
@@ -225,15 +228,15 @@ def transform_example(
     return record
 
 
-def create_non_member_pairs(dataset, num_pairs: int, seed: int = 42, verbose: bool = False) -> List[dict]:
+def create_non_member_pairs(dataset, member_examples: List[dict], num_pairs: int, mode: str = "same_problem", seed: int = 42, verbose: bool = False) -> List[dict]:
     """
     Create non-member data by randomly pairing problems with solutions from the full dataset.
     
-    Ensures that no original problem-solution pairs are preserved.
-    
     Args:
         dataset: The full original dataset with problem-solution pairs
+        member_examples: List of member examples (for same_problem mode)
         num_pairs: Number of non-member pairs to create (equal to member data size)
+        mode: "same_problem" (use member problems with random solutions) or "full_random" (randomly select from full dataset)
         seed: Random seed for reproducible shuffling
         verbose: Whether to print debug information
         
@@ -242,54 +245,114 @@ def create_non_member_pairs(dataset, num_pairs: int, seed: int = 42, verbose: bo
     """
     rng = random.Random(seed)
     
-    # Randomly sample problem indices and solution indices separately
-    problem_indices = rng.sample(range(len(dataset)), num_pairs)
-    solution_indices = rng.sample(range(len(dataset)), num_pairs)
-    
-    # Ensure no original pairs by fixing any matches
-    for i in range(num_pairs):
-        if problem_indices[i] == solution_indices[i]:
-            # Find a different solution index
-            for j in range(len(dataset)):
-                if j != problem_indices[i] and j not in solution_indices:
-                    solution_indices[i] = j
+    if mode == "same_problem":
+        # Mode 1: Use the same problems as members, but with random solutions
+        if len(member_examples) != num_pairs:
+            raise ValueError(f"Member examples count ({len(member_examples)}) must equal num_pairs ({num_pairs}) for same_problem mode")
+        
+        # Randomly sample solution indices from the full dataset
+        solution_indices = rng.sample(range(len(dataset)), num_pairs)
+        
+        # Ensure no original pairs by fixing any matches
+        for i in range(num_pairs):
+            member_problem = member_examples[i]["problem"]
+            # Find the original index of this member problem in the full dataset
+            member_original_idx = None
+            for j, ex in enumerate(dataset):
+                if str(ex["problem"]).strip() == str(member_problem).strip():
+                    member_original_idx = j
                     break
-            else:
-                # If all indices are used, swap with another position
-                swap_idx = (i + 1) % num_pairs
-                if problem_indices[i] != solution_indices[swap_idx]:
-                    solution_indices[i], solution_indices[swap_idx] = solution_indices[swap_idx], solution_indices[i]
+            
+            # If we found the original index and it matches our solution index, find a different one
+            if member_original_idx is not None and solution_indices[i] == member_original_idx:
+                for j in range(len(dataset)):
+                    if j != member_original_idx and j not in solution_indices:
+                        solution_indices[i] = j
+                        break
+                else:
+                    # If all indices are used, swap with another position
+                    swap_idx = (i + 1) % num_pairs
+                    if member_original_idx != solution_indices[swap_idx]:
+                        solution_indices[i], solution_indices[swap_idx] = solution_indices[swap_idx], solution_indices[i]
+        
+        # Create non-member examples using member problems with random solutions
+        non_member_examples = []
+        for i in range(num_pairs):
+            member_ex = member_examples[i]
+            sol_idx = solution_indices[i]
+            solution_ex = dataset[sol_idx]
+            
+            # Create new example with member problem but random solution
+            non_member_ex = {
+                "problem": str(member_ex["problem"]).strip(),
+                "solution": str(solution_ex["solution"]).strip(),
+                "answer": str(solution_ex.get("answer", "")).strip(),  # Use answer from solution source
+                "subject": str(solution_ex.get("subject", "")).strip(),  # Use subject from solution source
+                "level": solution_ex.get("level", 0),  # Use level from solution source
+                "unique_id": str(member_ex.get("unique_id", "")).strip(),  # Keep member's unique_id
+                "original_problem_idx": i,  # Index in member examples
+                "original_solution_idx": sol_idx,  # Index in full dataset
+                "is_member": False
+            }
+            
+            non_member_examples.append(non_member_ex)
     
-    # Create non-member examples
-    non_member_examples = []
-    for i in range(num_pairs):
-        prob_idx = problem_indices[i]
-        sol_idx = solution_indices[i]
+    elif mode == "full_random":
+        # Mode 2: Randomly select from the full dataset (original behavior)
+        # Randomly sample problem indices and solution indices separately
+        problem_indices = rng.sample(range(len(dataset)), num_pairs)
+        solution_indices = rng.sample(range(len(dataset)), num_pairs)
         
-        # Take problem from one example, solution from another
-        problem_ex = dataset[prob_idx]
-        solution_ex = dataset[sol_idx]
+        # Ensure no original pairs by fixing any matches
+        for i in range(num_pairs):
+            if problem_indices[i] == solution_indices[i]:
+                # Find a different solution index
+                for j in range(len(dataset)):
+                    if j != problem_indices[i] and j not in solution_indices:
+                        solution_indices[i] = j
+                        break
+                else:
+                    # If all indices are used, swap with another position
+                    swap_idx = (i + 1) % num_pairs
+                    if problem_indices[i] != solution_indices[swap_idx]:
+                        solution_indices[i], solution_indices[swap_idx] = solution_indices[swap_idx], solution_indices[i]
         
-        # Create new example with mismatched pair
-        non_member_ex = {
-            "problem": str(problem_ex["problem"]).strip(),
-            "solution": str(solution_ex["solution"]).strip(),
-            "answer": str(solution_ex.get("answer", "")).strip(),  # Use answer from solution source
-            "subject": str(solution_ex.get("subject", "")).strip(),  # Use subject from solution source
-            "level": solution_ex.get("level", 0),  # Use level from solution source
-            "unique_id": str(problem_ex.get("unique_id", "")).strip(),  # Keep problem's unique_id
-            "original_problem_idx": prob_idx,
-            "original_solution_idx": sol_idx,
-            "is_member": False
-        }
-        
-        non_member_examples.append(non_member_ex)
+        # Create non-member examples
+        non_member_examples = []
+        for i in range(num_pairs):
+            prob_idx = problem_indices[i]
+            sol_idx = solution_indices[i]
+            
+            # Take problem from one example, solution from another
+            problem_ex = dataset[prob_idx]
+            solution_ex = dataset[sol_idx]
+            
+            # Create new example with mismatched pair
+            non_member_ex = {
+                "problem": str(problem_ex["problem"]).strip(),
+                "solution": str(solution_ex["solution"]).strip(),
+                "answer": str(solution_ex.get("answer", "")).strip(),  # Use answer from solution source
+                "subject": str(solution_ex.get("subject", "")).strip(),  # Use subject from solution source
+                "level": solution_ex.get("level", 0),  # Use level from solution source
+                "unique_id": str(problem_ex.get("unique_id", "")).strip(),  # Keep problem's unique_id
+                "original_problem_idx": prob_idx,
+                "original_solution_idx": sol_idx,
+                "is_member": False
+            }
+            
+            non_member_examples.append(non_member_ex)
+    
+    else:
+        raise ValueError(f"Unknown random pairing mode: {mode}. Choose 'same_problem' or 'full_random'.")
     
     if verbose:
-        print(f"[create_non_member_pairs] Created {len(non_member_examples)} non-member examples")
+        print(f"[create_non_member_pairs] Created {len(non_member_examples)} non-member examples using mode '{mode}'")
         # Show a few examples of the mismatching
         for i in range(min(3, len(non_member_examples))):
-            print(f"  Example {i}: problem from idx {problem_indices[i]}, solution from idx {solution_indices[i]}")
+            if mode == "same_problem":
+                print(f"  Example {i}: member problem with solution from idx {solution_indices[i]}")
+            else:
+                print(f"  Example {i}: problem from idx {problem_indices[i]}, solution from idx {solution_indices[i]}")
     
     return non_member_examples
 
@@ -409,6 +472,95 @@ def add_member_flag(example, idx):
     return example_copy
 
 
+def update_target_gt_for_matching_problems(member_data, non_member_data, verbose: bool = False):
+    """
+    Update target_gt in extra_info for both member and non-member data when they have matching problems.
+    
+    When include_target_gt is True and we use same_problem mode, we want both member and non-member
+    entries with the same problem to have a list containing both solutions in their target_gt.
+    
+    Args:
+        member_data: List of member examples (already transformed)
+        non_member_data: List of non-member examples (already transformed)
+        verbose: Whether to print debug information
+        
+    Returns:
+        Tuple of (updated_member_data, updated_non_member_data)
+    """
+    # Create a mapping from problem text to (member_idx, non_member_idx) pairs
+    problem_to_indices = {}
+    
+    # Map member problems
+    for i, member_ex in enumerate(member_data):
+        problem_text = str(member_ex["prompt"][0]["content"]).strip()
+        if problem_text not in problem_to_indices:
+            problem_to_indices[problem_text] = {"member": [], "non_member": []}
+        problem_to_indices[problem_text]["member"].append(i)
+    
+    # Map non-member problems
+    for i, non_member_ex in enumerate(non_member_data):
+        problem_text = str(non_member_ex["prompt"][0]["content"]).strip()
+        if problem_text not in problem_to_indices:
+            problem_to_indices[problem_text] = {"member": [], "non_member": []}
+        problem_to_indices[problem_text]["non_member"].append(i)
+    
+    # Update target_gt for matching problems
+    updated_member_data = member_data.copy()
+    updated_non_member_data = non_member_data.copy()
+    
+    matches_found = 0
+    for problem_text, indices in problem_to_indices.items():
+        member_indices = indices["member"]
+        non_member_indices = indices["non_member"]
+        
+        if member_indices and non_member_indices:
+            matches_found += 1
+            if verbose:
+                print(f"[update_target_gt] Found matching problem: {len(member_indices)} members, {len(non_member_indices)} non-members")
+                print(f"  Problem: {problem_text[:100]}...")
+            
+            # Collect all solutions for this problem
+            all_solutions = []
+            
+            # Add member solutions
+            for member_idx in member_indices:
+                member_ex = updated_member_data[member_idx]
+                if "target_gt" in member_ex["extra_info"]:
+                    solution = member_ex["extra_info"]["target_gt"]
+                    if isinstance(solution, list):
+                        all_solutions.extend(solution)
+                    else:
+                        all_solutions.append(solution)
+            
+            # Add non-member solutions
+            for non_member_idx in non_member_indices:
+                non_member_ex = updated_non_member_data[non_member_idx]
+                if "target_gt" in non_member_ex["extra_info"]:
+                    solution = non_member_ex["extra_info"]["target_gt"]
+                    if isinstance(solution, list):
+                        all_solutions.extend(solution)
+                    else:
+                        all_solutions.append(solution)
+            
+            # Remove duplicates while preserving order
+            unique_solutions = []
+            for sol in all_solutions:
+                if sol not in unique_solutions:
+                    unique_solutions.append(sol)
+            
+            # Update all matching entries with the combined target_gt
+            for member_idx in member_indices:
+                updated_member_data[member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
+            
+            for non_member_idx in non_member_indices:
+                updated_non_member_data[non_member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
+    
+    if verbose:
+        print(f"[update_target_gt] Updated target_gt for {matches_found} matching problems")
+    
+    return updated_member_data, updated_non_member_data
+
+
 def _write_jsonl(path: str, rows: List[dict]) -> None:
     """Write a list of dictionaries to a JSONL file."""
     with open(path, "w", encoding="utf-8") as f:
@@ -505,6 +657,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--random_pairing_mode",
+        choices=["same_problem", "full_random"],
+        default="same_problem",
+        help=(
+            "Mode for random pairing method: "
+            "'same_problem' (use member problems with random solutions), "
+            "'full_random' (randomly select from full dataset)."
+        ),
+    )
+    parser.add_argument(
         "--hdfs_dir",
         default=None,
         help="Optional HDFS directory to mirror the Parquet file to.",
@@ -561,9 +723,17 @@ def main():
     )
     parser.add_argument(
         "--bleurt_length_penalty",
-        choices=["none", "ratio", "sqrt", "log"],
+        choices=["none", "ratio", "sqrt", "log", "quadratic", "exponential"],
         default="none",
-        help="Length penalty type for BLEURT (default: none).",
+        help=(
+            "Length penalty type for BLEURT (default: none). Options:\n"
+            "- none: No penalty\n"
+            "- ratio: Linear penalty based on length ratio\n"
+            "- sqrt: Square root of ratio (milder penalty)\n"
+            "- log: Logarithmic penalty\n"
+            "- quadratic: Quadratic penalty (ratio^2) for stronger penalization\n"
+            "- exponential: Exponential penalty (e^(-ratio)) for aggressive penalization"
+        ),
     )
     parser.add_argument(
         "--bleurt_length_threshold",
@@ -668,8 +838,30 @@ def main():
         
         # Create non-member data using selected method
         if args.mia_nonmember_method == "random_pairing":
-            print(f"Creating {len(ds_members_subset)} non-member examples with random problem-solution pairs from full dataset ({len(ds_full)} examples)...")
-            non_member_examples = create_non_member_pairs(ds_full, num_pairs=len(ds_members_subset), seed=args.subset_seed + 1, verbose=args.verbose)
+            print(f"Creating {len(ds_members_subset)} non-member examples with random pairing mode '{args.random_pairing_mode}'...")
+            
+            # Convert member dataset to list of examples for same_problem mode
+            member_examples_list = []
+            for i in range(len(ds_members_subset)):
+                ex = ds_members_subset[i]
+                member_ex = {
+                    "problem": str(ex["problem"]).strip(),
+                    "solution": str(ex["solution"]).strip(),
+                    "answer": str(ex.get("answer", "")).strip(),
+                    "subject": str(ex.get("subject", "")).strip(),
+                    "level": ex.get("level", 0),
+                    "unique_id": str(ex.get("unique_id", "")).strip(),
+                }
+                member_examples_list.append(member_ex)
+            
+            non_member_examples = create_non_member_pairs(
+                ds_full, 
+                member_examples=member_examples_list,
+                num_pairs=len(ds_members_subset), 
+                mode=args.random_pairing_mode,
+                seed=args.subset_seed + 1, 
+                verbose=args.verbose
+            )
             final_member_indices = member_indices  # No subsampling needed
         elif args.mia_nonmember_method == "unused_examples":
             print(f"Creating non-member examples from unused dataset entries (not seen during fine-tuning)...")
@@ -698,10 +890,22 @@ def main():
         ds_non_members_raw = datasets.Dataset.from_list(non_member_examples)
         ds_non_members = ds_non_members_raw.map(transform_fn, with_indices=True, remove_columns=ds_non_members_raw.column_names)
         
-        # Create member data from (potentially subsampled) dataset
-        # Add is_member field to member examples before transformation
-        ds_members_with_flag = ds_members_subset.map(add_member_flag, with_indices=True)
-        ds_members = ds_members_with_flag.map(transform_fn, with_indices=True, remove_columns=ds_members_with_flag.column_names)
+        # Handle target_gt updates for matching problems if include_target_gt is True
+        if args.include_target_gt and args.mia_nonmember_method == "random_pairing" and args.random_pairing_mode == "same_problem":
+            print("Updating target_gt for matching problems between member and non-member data...")
+            
+            # Convert datasets to lists for processing
+            member_data_list = [ds_members[i] for i in range(len(ds_members))]
+            non_member_data_list = [ds_non_members[i] for i in range(len(ds_non_members))]
+            
+            # Update target_gt for matching problems
+            updated_member_data, updated_non_member_data = update_target_gt_for_matching_problems(
+                member_data_list, non_member_data_list, verbose=args.verbose
+            )
+            
+            # Convert back to datasets
+            ds_members = datasets.Dataset.from_list(updated_member_data)
+            ds_non_members = datasets.Dataset.from_list(updated_non_member_data)
         
         # Combine member and non-member data for the final training set
         ds_combined = datasets.concatenate_datasets([ds_members, ds_non_members])

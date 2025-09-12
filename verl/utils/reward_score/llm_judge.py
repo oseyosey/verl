@@ -148,7 +148,7 @@ def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
     """Return a possibly reduced list of refs according to extra_info.
 
     Supported options in extra_info:
-    • target_gt – a string; keep only references that exactly match it.
+    • target_gt – a string or list of strings; keep only references that exactly match any of them.
     • filter_gt_by_prompt_token (bool) and prompt – extract the
       last whitespace‐delimited token of prompt (lower‐cased) and keep only
       references that contain that token (after simple regex tokenisation).
@@ -159,10 +159,15 @@ def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
     if not extra_info or not isinstance(extra_info, dict):
         return refs
 
-    # 1. Exact target string
+    # 1. Exact target string(s)
     tgt = extra_info.get("target_gt")
     if isinstance(tgt, str):
         subset = [r for r in refs if r == tgt]
+        if subset:
+            return subset
+    elif isinstance(tgt, list):
+        # Handle list of target strings - keep references that match any of them
+        subset = [r for r in refs if r in tgt]
         if subset:
             return subset
 
