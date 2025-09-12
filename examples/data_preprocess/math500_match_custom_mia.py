@@ -73,6 +73,9 @@ def transform_example(
     bleurt_length_penalty: str = "none",
     bleurt_length_threshold: float = 1.5,
     bleurt_device: str = None,
+    # Embedding-specific parameters
+    embedding_length_penalty: str = "none",
+    embedding_length_threshold: float = 1.5,
 ):
     """Convert MATH-500 record into verl RL parquet compatible format.
 
@@ -188,6 +191,20 @@ def transform_example(
             }
             print(f"[transform_example] BLEURT configuration added to extra_info for idx={idx}:")
             print(json.dumps(bleurt_config, indent=2))
+
+    # Add Embedding specific configuration
+    if match_type == "embedding":
+        extra_info["length_penalty"] = embedding_length_penalty
+        extra_info["length_threshold"] = embedding_length_threshold
+        
+        # Debug logging for Embedding configuration
+        if verbose:
+            embedding_config = {
+                "length_penalty": extra_info.get("length_penalty"),
+                "length_threshold": extra_info.get("length_threshold")
+            }
+            print(f"[transform_example] Embedding configuration added to extra_info for idx={idx}:")
+            print(json.dumps(embedding_config, indent=2))
 
     # Decide on *data_source* according to requested matching type.
     if match_type == "lexical":
@@ -747,6 +764,26 @@ def main():
         help="Device to run BLEURT on ('cuda', 'cpu', or None for auto-detect).",
     )
     parser.add_argument(
+        "--embedding_length_penalty",
+        choices=["none", "ratio", "sqrt", "log", "quadratic", "exponential"],
+        default="none",
+        help=(
+            "Length penalty type for embedding similarity (default: none). Options:\n"
+            "- none: No penalty\n"
+            "- ratio: Linear penalty based on length ratio\n"
+            "- sqrt: Square root of ratio (milder penalty)\n"
+            "- log: Logarithmic penalty\n"
+            "- quadratic: Quadratic penalty (ratio^2) for stronger penalization\n"
+            "- exponential: Exponential penalty (e^(-ratio)) for aggressive penalization"
+        ),
+    )
+    parser.add_argument(
+        "--embedding_length_threshold",
+        type=float,
+        default=1.5,
+        help="Length threshold for applying penalty in embedding similarity (default: 1.5).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging for debugging the preprocessing pipeline.",
@@ -822,6 +859,8 @@ def main():
         bleurt_length_penalty=args.bleurt_length_penalty,
         bleurt_length_threshold=args.bleurt_length_threshold,
         bleurt_device=args.bleurt_device,
+        embedding_length_penalty=args.embedding_length_penalty,
+        embedding_length_threshold=args.embedding_length_threshold,
     )
 
     if args.mia:
