@@ -118,48 +118,89 @@ def _load_qwen3_model() -> Tuple[Any, int]:
     
     model_name = "Qwen/Qwen3-Embedding-0.6B"
     if model_name not in _MODEL_CACHE:
-        try:
-            # Load with recommended optimizations and correct dtype for flash_attention_2
-            import torch
-            model = SentenceTransformer(
-                model_name,
-                # Enable flash_attention_2 with correct dtype
-                model_kwargs={
-                    "attn_implementation": "flash_attention_2", 
-                    "device_map": "auto",
-                    "dtype": torch.float16  # Use fp16 for flash attention compatibility
-                },
-                # Set padding_side to "left" as recommended
-                tokenizer_kwargs={"padding_side": "left"},
-            )
-            _MODEL_CACHE[model_name] = model
-            # Qwen3-Embedding-0.6B has configurable dimensions, default is 1024
-            _EMBED_DIM_CACHE[model_name] = 1024
-        except Exception as e:
-            # Try with bfloat16 if float16 fails
+        import torch
+        
+        # Check if CUDA is available for FlashAttention2
+        cuda_available = torch.cuda.is_available()
+        
+        # Debug information
+        print(f"[DEBUG] Loading Qwen3 model - CUDA available: {cuda_available}")
+        if cuda_available:
+            print(f"[DEBUG] CUDA device count: {torch.cuda.device_count()}")
+            print(f"[DEBUG] Current CUDA device: {torch.cuda.current_device()}")
+        
+        if cuda_available:
+            # Try FlashAttention2 optimizations first (GPU only)
             try:
-                warnings.warn(f"Failed to load Qwen3 with float16: {e}. Trying bfloat16...")
-                import torch
+                print("[DEBUG] Attempting to load with FlashAttention2...")
+                # Force GPU usage by setting device explicitly if available
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                print(f"[DEBUG] Using device: {device}")
+                
                 model = SentenceTransformer(
                     model_name,
                     model_kwargs={
                         "attn_implementation": "flash_attention_2", 
                         "device_map": "auto",
-                        "dtype": torch.bfloat16
+                        "dtype": torch.float16
                     },
                     tokenizer_kwargs={"padding_side": "left"},
                 )
                 _MODEL_CACHE[model_name] = model
                 _EMBED_DIM_CACHE[model_name] = 1024
-            except Exception as e2:
-                # Fallback to basic loading without flash attention
+                print("[DEBUG] Successfully loaded with FlashAttention2")
+                return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name]
+            except Exception as e:
+                warnings.warn(f"Failed to load Qwen3 with FlashAttention2: {e}. Trying bfloat16...")
                 try:
-                    warnings.warn(f"Failed to load Qwen3 with flash attention: {e2}. Trying basic loading...")
-                    model = SentenceTransformer(model_name)
+                    print("[DEBUG] Attempting to load with bfloat16 FlashAttention2...")
+                    model = SentenceTransformer(
+                        model_name,
+                        model_kwargs={
+                            "attn_implementation": "flash_attention_2", 
+                            "device_map": "auto",
+                            "dtype": torch.bfloat16
+                        },
+                        tokenizer_kwargs={"padding_side": "left"},
+                    )
                     _MODEL_CACHE[model_name] = model
                     _EMBED_DIM_CACHE[model_name] = 1024
-                except Exception as e3:
-                    raise RuntimeError(f"Failed to load {model_name}: {e3}")
+                    print("[DEBUG] Successfully loaded with bfloat16 FlashAttention2")
+                    return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name]
+                except Exception as e2:
+                    warnings.warn(f"Failed to load Qwen3 with bfloat16 FlashAttention2: {e2}. Trying basic loading...")
+        
+        # Fallback to basic loading (works on both CPU and GPU)
+        try:
+            if cuda_available:
+                # On GPU, try with device_map but without FlashAttention2
+                print("[DEBUG] Attempting to load on GPU without FlashAttention2...")
+                # Ensure we can access GPU even without dedicated allocation
+                torch.cuda.set_device(0)  # Use first available GPU
+                print(f"[DEBUG] Set CUDA device to: {torch.cuda.current_device()}")
+                
+                model = SentenceTransformer(
+                    model_name,
+                    model_kwargs={
+                        "device_map": "auto",
+                        "dtype": torch.float32  # Use float32 for better compatibility
+                    },
+                    tokenizer_kwargs={"padding_side": "left"},
+                )
+                print("[DEBUG] Successfully loaded on GPU without FlashAttention2")
+            else:
+                # On CPU, use basic loading
+                print("[DEBUG] Attempting to load on CPU...")
+                model = SentenceTransformer(
+                    model_name,
+                    tokenizer_kwargs={"padding_side": "left"},
+                )
+                print("[DEBUG] Successfully loaded on CPU")
+            
+            _MODEL_CACHE[model_name] = model
+            _EMBED_DIM_CACHE[model_name] = 1024
+        except Exception as e3:
+            raise RuntimeError(f"Failed to load {model_name}: {e3}")
     
     return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name]
 
