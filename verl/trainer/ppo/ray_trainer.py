@@ -651,12 +651,14 @@ class RayPPOTrainer:
 
             # evaluate using reward_function
             result = self.val_reward_fn(test_batch, return_dict=True)
+            print(f"result: {result}")
             reward_tensor = result["reward_tensor"]
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
 
             reward_extra_infos_dict["reward"].extend(scores)
             print(f"len reward_extra_infos_dict['reward']: {len(reward_extra_infos_dict['reward'])}")
+            # print("skip validation reward computation")
             if "reward_extra_info" in result:
                 for key, lst in result["reward_extra_info"].items():
                     reward_extra_infos_dict[key].extend(lst)

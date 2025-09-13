@@ -45,6 +45,7 @@ To use Qwen3-Embedding-0.6B, set the metric in extra_info:
 from __future__ import annotations
 
 import os
+import pdb
 import warnings
 from functools import lru_cache
 from typing import List, Iterable, Tuple, Optional, Union, Any
@@ -214,19 +215,30 @@ def _get_model_for_metric(metric: Optional[str]) -> Tuple[Any, int, str]:
                 "Install with: pip install sentence-transformers"
             )
         
+        # Check cache first to avoid reloading the model
+        model_name = "Qwen/Qwen3-Embedding-0.6B"
+        if model_name in _MODEL_CACHE:
+            return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name], "qwen3"
+        
         try:
             model, embed_dim = _load_qwen3_model()
             return model, embed_dim, "qwen3"
         except Exception as e:
             raise RuntimeError(f"Failed to load Qwen3-Embedding-0.6B: {e}")
-    else:
-        # Default to FastText
+    elif metric is None or metric == "fasttext":
+        # Default to FastText (None or explicit "fasttext")
         if _MODEL is None:
             raise RuntimeError(
                 "No embedding model available. Install either fasttext or gensim with "
                 "'fasttext-wiki-news-subwords-300' dataset, or use Qwen3 with sentence-transformers."
             )
         return _MODEL, _EMBED_DIM, "fasttext"
+    else:
+        # Invalid metric provided
+        raise ValueError(
+            f"Invalid metric '{metric}'. Supported metrics are: 'fasttext' (default), 'qwen3'. "
+            f"Use None or omit the metric parameter to use the default FastText model."
+        )
 
 
 def _tokenise(text: str) -> List[str]:
@@ -500,6 +512,7 @@ def compute_score(  # noqa: PLR0913
             length_penalty = first_extra_info.get("length_penalty", _DEFAULT_LENGTH_PENALTY)
             length_threshold = first_extra_info.get("length_threshold", _DEFAULT_LENGTH_THRESHOLD)
 
+    # pdb.set_trace()
     # Batch mode detection
     if solution_strs is not None or ground_truths is not None:
         needs_filter = False

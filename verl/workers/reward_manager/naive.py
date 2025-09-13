@@ -55,7 +55,8 @@ class NaiveRewardManager:
 
         already_print_data_sources = {}
 
-        for i in range(len(data)):
+        from tqdm import tqdm
+        for i in tqdm(range(len(data)), desc="Processing reward scores"):
             data_item = data[i]  # DataProtoItem
 
             prompt_ids = data_item.batch["prompts"]
