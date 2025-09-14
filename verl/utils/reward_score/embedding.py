@@ -109,15 +109,31 @@ _MODEL_CACHE: dict[str, Any] = {}
 _EMBED_DIM_CACHE: dict[str, int] = {}
 
 
-def _load_qwen3_model() -> Tuple[Any, int]:
-    """Load Qwen3-Embedding-0.6B model using sentence-transformers with optimizations."""
+def _load_qwen3_model(model_size: str = "0.6B") -> Tuple[Any, int]:
+    """Load Qwen3-Embedding model using sentence-transformers with optimizations.
+    
+    Parameters
+    ----------
+    model_size : str
+        Model size to load: "0.6B", "4B", or "8B" (default: "0.6B")
+    
+    Returns
+    -------
+    Tuple[Any, int]
+        The loaded model and its embedding dimension
+    """
     if not _SENTENCE_TRANSFORMERS_AVAILABLE:
         raise ImportError(
-            "sentence-transformers is required for Qwen3-Embedding-0.6B. "
+            f"sentence-transformers is required for Qwen3-Embedding-{model_size}. "
             "Install with: pip install sentence-transformers"
         )
     
-    model_name = "Qwen/Qwen3-Embedding-0.6B"
+    # Validate model size
+    valid_sizes = ["0.6B", "4B", "8B"]
+    if model_size not in valid_sizes:
+        raise ValueError(f"Invalid model size '{model_size}'. Must be one of: {valid_sizes}")
+    
+    model_name = f"Qwen/Qwen3-Embedding-{model_size}"
     if model_name not in _MODEL_CACHE:
         import torch
         
@@ -148,8 +164,10 @@ def _load_qwen3_model() -> Tuple[Any, int]:
                     tokenizer_kwargs={"padding_side": "left"},
                 )
                 _MODEL_CACHE[model_name] = model
-                _EMBED_DIM_CACHE[model_name] = 1024
-                print("[DEBUG] Successfully loaded with FlashAttention2")
+                # Embedding dimensions for different model sizes
+                embed_dims = {"0.6B": 1024, "4B": 2560, "8B": 4096}
+                _EMBED_DIM_CACHE[model_name] = embed_dims[model_size]
+                print(f"[DEBUG] Successfully loaded {model_name} with FlashAttention2")
                 return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name]
             except Exception as e:
                 warnings.warn(f"Failed to load Qwen3 with FlashAttention2: {e}. Trying bfloat16...")
@@ -165,8 +183,10 @@ def _load_qwen3_model() -> Tuple[Any, int]:
                         tokenizer_kwargs={"padding_side": "left"},
                     )
                     _MODEL_CACHE[model_name] = model
-                    _EMBED_DIM_CACHE[model_name] = 1024
-                    print("[DEBUG] Successfully loaded with bfloat16 FlashAttention2")
+                    # Embedding dimensions for different model sizes
+                    embed_dims = {"0.6B": 1024, "4B": 2560, "8B": 4096}
+                    _EMBED_DIM_CACHE[model_name] = embed_dims[model_size]
+                    print(f"[DEBUG] Successfully loaded {model_name} with bfloat16 FlashAttention2")
                     return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name]
                 except Exception as e2:
                     warnings.warn(f"Failed to load Qwen3 with bfloat16 FlashAttention2: {e2}. Trying basic loading...")
@@ -199,7 +219,9 @@ def _load_qwen3_model() -> Tuple[Any, int]:
                 print("[DEBUG] Successfully loaded on CPU")
             
             _MODEL_CACHE[model_name] = model
-            _EMBED_DIM_CACHE[model_name] = 1024
+            # Embedding dimensions for different model sizes
+            embed_dims = {"0.6B": 1024, "4B": 2560, "8B": 4096}
+            _EMBED_DIM_CACHE[model_name] = embed_dims[model_size]
         except Exception as e3:
             raise RuntimeError(f"Failed to load {model_name}: {e3}")
     
@@ -207,24 +229,51 @@ def _load_qwen3_model() -> Tuple[Any, int]:
 
 
 def _get_model_for_metric(metric: Optional[str]) -> Tuple[Any, int, str]:
-    """Get the appropriate model based on the metric specified."""
-    if metric == "qwen3":
+    """Get the appropriate model based on the metric specified.
+    
+    Parameters
+    ----------
+    metric : Optional[str]
+        The metric to use. Can be:
+        - None or "fasttext": Use FastText embeddings
+        - "qwen3": Use Qwen3-Embedding-0.6B (default)
+        - "qwen3-0.6B": Use Qwen3-Embedding-0.6B
+        - "qwen3-4B": Use Qwen3-Embedding-4B
+        - "qwen3-8B": Use Qwen3-Embedding-8B
+    
+    Returns
+    -------
+    Tuple[Any, int, str]
+        The model, embedding dimension, and model type
+    """
+    if metric and metric.startswith("qwen3"):
         if not _SENTENCE_TRANSFORMERS_AVAILABLE:
             raise ImportError(
-                "Qwen3-Embedding-0.6B requested but sentence-transformers not available. "
+                "Qwen3-Embedding requested but sentence-transformers not available. "
                 "Install with: pip install sentence-transformers"
             )
         
+        # Parse model size from metric
+        if metric == "qwen3":
+            model_size = "0.6B"  # Default to 0.6B for backward compatibility
+        elif metric in ["qwen3-0.6B", "qwen3-4B", "qwen3-8B"]:
+            model_size = metric.split("-")[1]
+        else:
+            raise ValueError(
+                f"Invalid Qwen3 metric '{metric}'. Valid options are: "
+                "'qwen3', 'qwen3-0.6B', 'qwen3-4B', 'qwen3-8B'"
+            )
+        
         # Check cache first to avoid reloading the model
-        model_name = "Qwen/Qwen3-Embedding-0.6B"
+        model_name = f"Qwen/Qwen3-Embedding-{model_size}"
         if model_name in _MODEL_CACHE:
             return _MODEL_CACHE[model_name], _EMBED_DIM_CACHE[model_name], "qwen3"
         
         try:
-            model, embed_dim = _load_qwen3_model()
+            model, embed_dim = _load_qwen3_model(model_size)
             return model, embed_dim, "qwen3"
         except Exception as e:
-            raise RuntimeError(f"Failed to load Qwen3-Embedding-0.6B: {e}")
+            raise RuntimeError(f"Failed to load Qwen3-Embedding-{model_size}: {e}")
     elif metric is None or metric == "fasttext":
         # Default to FastText (None or explicit "fasttext")
         if _MODEL is None:
@@ -236,7 +285,8 @@ def _get_model_for_metric(metric: Optional[str]) -> Tuple[Any, int, str]:
     else:
         # Invalid metric provided
         raise ValueError(
-            f"Invalid metric '{metric}'. Supported metrics are: 'fasttext' (default), 'qwen3'. "
+            f"Invalid metric '{metric}'. Supported metrics are: 'fasttext' (default), "
+            f"'qwen3', 'qwen3-0.6B', 'qwen3-4B', 'qwen3-8B'. "
             f"Use None or omit the metric parameter to use the default FastText model."
         )
 
@@ -478,7 +528,10 @@ def compute_score(  # noqa: PLR0913
     
     Supported metrics:
     - "fasttext" (default): Uses FastText embeddings
-    - "qwen3": Uses Qwen3-Embedding-0.6B via sentence-transformers
+    - "qwen3": Uses Qwen3-Embedding-0.6B via sentence-transformers (default Qwen3 size)
+    - "qwen3-0.6B": Uses Qwen3-Embedding-0.6B explicitly
+    - "qwen3-4B": Uses Qwen3-Embedding-4B 
+    - "qwen3-8B": Uses Qwen3-Embedding-8B
     
     Length penalty configuration (via extra_info):
     - length_penalty: "none", "ratio", "sqrt", "log", "quadratic", "exponential" (default: "none")
@@ -603,16 +656,22 @@ or specify it explicitly via ``custom_reward_function``::
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Add to each example's *extra_info* field::
 
-    {"metric": "fasttext"}  # Default FastText model
-    {"metric": "qwen3"}     # Qwen3-Embedding-0.6B model
+    {"metric": "fasttext"}    # Default FastText model
+    {"metric": "qwen3"}       # Qwen3-Embedding-0.6B model (default Qwen3)
+    {"metric": "qwen3-0.6B"}  # Qwen3-Embedding-0.6B model (explicit)
+    {"metric": "qwen3-4B"}    # Qwen3-Embedding-4B model
+    {"metric": "qwen3-8B"}    # Qwen3-Embedding-8B model
 
 4. Available Models
 ~~~~~~~~~~~~~~~~~~~
 - **fasttext** (default): Uses FastText embeddings via gensim or fasttext package
-- **qwen3**: Uses Qwen3-Embedding-0.6B via sentence-transformers with optimizations:
-  - Uses query prompts for better performance
-  - Leverages built-in similarity computation
-  - Enables flash_attention_2 and optimized tokenization
+- **qwen3** family: Uses Qwen3-Embedding models via sentence-transformers with optimizations:
+  - **qwen3** or **qwen3-0.6B**: 1024-dimensional embeddings (smallest model)
+  - **qwen3-4B**: 2560-dimensional embeddings (medium model) 
+  - **qwen3-8B**: 4096-dimensional embeddings (largest model)
+  - All models use query prompts for better performance
+  - Leverage built-in similarity computation
+  - Enable flash_attention_2 and optimized tokenization when available
 
 5. Extending / replacing the backend
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

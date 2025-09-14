@@ -98,6 +98,16 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
             ground_truth=ground_truth,
             extra_info=extra_info,
         )
+    elif data_source.startswith("embedding_remote"):
+        # Remote embedding-based semantic similarity reward (TEI server)
+        from . import embedding_remote
+
+        res = embedding_remote.compute_score(
+            data_source=data_source,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            extra_info=extra_info,
+        )
     elif data_source.startswith("lexical_match"):
         
         # Generic lexical similarity reward based on BM25 / Levenshtein, etc.

@@ -22,8 +22,11 @@ Usage:
   # With MIA data generation (same problem with random solutions)
   python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode same_problem
   
-  # Custom subset size and embedding matching
+  # Custom subset size and local embedding matching
   python math500_match_custom_mia.py --subset_size 300 --match_type embedding --mia
+  
+  # Remote embedding matching (requires TEI server)
+  python math500_match_custom_mia.py --subset_size 300 --match_type embedding_remote --mia
   
   # LLM judge with custom prompt template and thinking mode
   python math500_match_custom_mia.py --match_type llm_judge --llm_prompt_template detailed_rubric --subset_size 100
@@ -87,7 +90,7 @@ def transform_example(
         Index within the split – used to create a stable identifier.
     split : str
         Data split name (e.g. "test"). 
-    match_type : {"lexical", "embedding", "llm_judge", "bleurt"}
+    match_type : {"lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"}
         Determines which reward type will be used at training-time and thus
         controls the ``data_source`` string expected by
         ``verl.utils.reward_score.default_compute_score``.
@@ -97,9 +100,9 @@ def transform_example(
         Print extra information while transforming – useful for debugging.
     """
 
-    if match_type not in {"lexical", "embedding", "llm_judge", "bleurt"}:
+    if match_type not in {"lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"}:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'llm_judge', or 'bleurt'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'embedding_remote', 'llm_judge', or 'bleurt'."
         )
 
     # Construct *extra_info* section – accessible by the reward loader so that
@@ -192,8 +195,8 @@ def transform_example(
             print(f"[transform_example] BLEURT configuration added to extra_info for idx={idx}:")
             print(json.dumps(bleurt_config, indent=2))
 
-    # Add Embedding specific configuration
-    if match_type == "embedding":
+    # Add Embedding specific configuration (shared between embedding and embedding_remote)
+    if match_type in ["embedding", "embedding_remote"]:
         extra_info["length_penalty"] = embedding_length_penalty
         extra_info["length_threshold"] = embedding_length_threshold
         
@@ -203,7 +206,7 @@ def transform_example(
                 "length_penalty": extra_info.get("length_penalty"),
                 "length_threshold": extra_info.get("length_threshold")
             }
-            print(f"[transform_example] Embedding configuration added to extra_info for idx={idx}:")
+            print(f"[transform_example] {match_type.title()} configuration added to extra_info for idx={idx}:")
             print(json.dumps(embedding_config, indent=2))
 
     # Decide on *data_source* according to requested matching type.
@@ -211,13 +214,15 @@ def transform_example(
         data_source = "lexical_match_custom"
     elif match_type == "embedding":
         data_source = "embedding_match_custom"
+    elif match_type == "embedding_remote":
+        data_source = "embedding_remote_match_custom"
     elif match_type == "llm_judge":
         data_source = "llm_judge_custom"
     elif match_type == "bleurt":
         data_source = "bleurt_match_custom"
     else:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'llm_judge', or 'bleurt'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'embedding_remote', 'llm_judge', or 'bleurt'."
         )
 
     # Build the verl record.
@@ -604,9 +609,9 @@ def main():
     )
     parser.add_argument(
         "--match_type",
-        choices=["lexical", "embedding", "llm_judge", "bleurt"],
+        choices=["lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"],
         default="lexical",
-        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (FastText similarity), llm_judge (LLM-as-a-judge evaluation), or bleurt (BLEURT-based evaluation).",
+        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (local FastText similarity), embedding_remote (remote TEI server similarity), llm_judge (LLM-as-a-judge evaluation), or bleurt (BLEURT-based evaluation).",
     )
     parser.add_argument(
         "--metric",
@@ -768,7 +773,7 @@ def main():
         choices=["none", "ratio", "sqrt", "log", "quadratic", "exponential"],
         default="none",
         help=(
-            "Length penalty type for embedding similarity (default: none). Options:\n"
+            "Length penalty type for embedding similarity (both local and remote) (default: none). Options:\n"
             "- none: No penalty\n"
             "- ratio: Linear penalty based on length ratio\n"
             "- sqrt: Square root of ratio (milder penalty)\n"
@@ -781,7 +786,7 @@ def main():
         "--embedding_length_threshold",
         type=float,
         default=1.5,
-        help="Length threshold for applying penalty in embedding similarity (default: 1.5).",
+        help="Length threshold for applying penalty in embedding similarity (both local and remote) (default: 1.5).",
     )
     parser.add_argument(
         "--verbose",

@@ -128,3 +128,5 @@ outputs
 
 # 
 *.whl
+verl/utils/reward_score/deploy/text-embeddings-inference_1.8.sif
+verl/utils/reward_score/deploy/text-embeddings-inference_hopper-1.8.sif
