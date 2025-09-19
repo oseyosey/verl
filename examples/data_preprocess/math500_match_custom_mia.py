@@ -79,6 +79,8 @@ def transform_example(
     # Embedding-specific parameters
     embedding_length_penalty: str = "none",
     embedding_length_threshold: float = 1.5,
+    # Transformed ground truth
+    transformed_solution: str = None,
 ):
     """Convert MATH-500 record into verl RL parquet compatible format.
 
@@ -138,6 +140,14 @@ def transform_example(
                 f"[transform_example] Adding assistant_prefix for idx={idx}: {example['assistant_prefix']}"
             )
         extra_info["assistant_prefix"] = example["assistant_prefix"]
+
+    # Add transformed ground truth if provided
+    if transformed_solution is not None:
+        extra_info["transformed_ground_truth"] = str(transformed_solution).strip()
+        if verbose:
+            print(
+                f"[transform_example] Added transformed_ground_truth for idx={idx}: {str(transformed_solution).strip()[:100]}"
+            )
 
     # Add LLM judge specific configuration
     if match_type == "llm_judge":
@@ -608,6 +618,16 @@ def main():
         help="Dataset split to use (default: test)",
     )
     parser.add_argument(
+        "--transformed_dataset_path",
+        default=None,
+        help="Optional HuggingFace dataset path containing transformed ground truths (solutions)",
+    )
+    parser.add_argument(
+        "--transformed_dataset_split",
+        default="train",
+        help="Dataset split to use for transformed dataset (default: train)",
+    )
+    parser.add_argument(
         "--match_type",
         choices=["lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"],
         default="lexical",
@@ -805,6 +825,17 @@ def main():
     
     if args.verbose:
         print(f"[main] Loaded {len(ds_full)} examples from {args.dataset_path} ({args.dataset_split} split)")
+    
+    # Load transformed dataset if provided
+    ds_transformed = None
+    if args.transformed_dataset_path:
+        ds_transformed = datasets.load_dataset(args.transformed_dataset_path, split=args.transformed_dataset_split)
+        if args.verbose:
+            print(f"[main] Loaded {len(ds_transformed)} transformed examples from {args.transformed_dataset_path} ({args.transformed_dataset_split} split)")
+        if len(ds_transformed) != len(ds_full):
+            raise ValueError(
+                f"Transformed dataset size ({len(ds_transformed)}) does not match main dataset size ({len(ds_full)})"
+            )
 
     # Determine the actual fine-tuning subset size
     finetune_size = args.finetune_subset_size if args.finetune_subset_size is not None else args.subset_size
@@ -846,27 +877,45 @@ def main():
             print(f"[main] Using full dataset with {len(ds_members_subset)} examples for member data (no subsampling applied)")
 
     # Prepare transformation function with fixed parameters
-    transform_fn = partial(
-        transform_example,
-        split=args.dataset_split,
-        match_type=args.match_type,
-        metric=args.metric,
-        include_target_gt=args.include_target_gt,
-        verbose=args.verbose,
-        llm_model=args.llm_model,
-        llm_temperature=args.llm_temperature,
-        llm_max_tokens=args.llm_max_tokens,
-        llm_timeout=args.llm_timeout,
-        llm_prompt_template=args.llm_prompt_template,
-        llm_thinking_enabled=args.llm_thinking_enabled,
-        llm_thinking_budget=args.llm_thinking_budget,
-        bleurt_checkpoint=args.bleurt_checkpoint,
-        bleurt_length_penalty=args.bleurt_length_penalty,
-        bleurt_length_threshold=args.bleurt_length_threshold,
-        bleurt_device=args.bleurt_device,
-        embedding_length_penalty=args.embedding_length_penalty,
-        embedding_length_threshold=args.embedding_length_threshold,
-    )
+    # We need to track the original indices when using subsampled data
+    idx_to_original = {}
+    if args.subset_size is not None and args.subset_size < len(ds_full):
+        for new_idx, orig_idx in enumerate(sampled_indices):
+            idx_to_original[new_idx] = orig_idx
+    
+    def transform_with_transformed(example, idx):
+        transformed_sol = None
+        if ds_transformed is not None:
+            # Get the original index if we're using subsampled data
+            orig_idx = idx_to_original.get(idx, idx)
+            if orig_idx < len(ds_transformed):
+                transformed_sol = ds_transformed[orig_idx]["solution"]
+        
+        return transform_example(
+            example=example,
+            idx=idx,
+            split=args.dataset_split,
+            match_type=args.match_type,
+            metric=args.metric,
+            include_target_gt=args.include_target_gt,
+            verbose=args.verbose,
+            llm_model=args.llm_model,
+            llm_temperature=args.llm_temperature,
+            llm_max_tokens=args.llm_max_tokens,
+            llm_timeout=args.llm_timeout,
+            llm_prompt_template=args.llm_prompt_template,
+            llm_thinking_enabled=args.llm_thinking_enabled,
+            llm_thinking_budget=args.llm_thinking_budget,
+            bleurt_checkpoint=args.bleurt_checkpoint,
+            bleurt_length_penalty=args.bleurt_length_penalty,
+            bleurt_length_threshold=args.bleurt_length_threshold,
+            bleurt_device=args.bleurt_device,
+            embedding_length_penalty=args.embedding_length_penalty,
+            embedding_length_threshold=args.embedding_length_threshold,
+            transformed_solution=transformed_sol,
+        )
+    
+    transform_fn = transform_with_transformed
 
     if args.mia:
         # MIA mode: Create both member and non-member data
