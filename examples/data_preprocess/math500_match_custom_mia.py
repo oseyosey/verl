@@ -16,11 +16,17 @@ Usage:
   # With MIA data generation (safer unused examples method)
   python math500_match_custom_mia.py --mia --mia_nonmember_method unused_examples
   
-  # With MIA data generation (original random pairing method)
+  # With MIA data generation (original random pairing method) - deduplicates when using --include_target_gt
   python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode full_random
   
-  # With MIA data generation (same problem with random solutions)
+  # With MIA data generation (same problem with random solutions) - deduplicates when using --include_target_gt
   python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode same_problem
+  
+  # With perturbed solutions (same problems as members) - deduplicates when using --include_target_gt
+  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --perturbed_dataset_path YOUR_PERTURBED_DATASET
+  
+  # With perturbed solutions (random problems from full dataset) - deduplicates when using --include_target_gt
+  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode full_random --perturbed_dataset_path YOUR_PERTURBED_DATASET
   
   # Custom subset size and local embedding matching
   python math500_match_custom_mia.py --subset_size 300 --match_type embedding --mia
@@ -123,30 +129,31 @@ def transform_example(
     for field in ["original_idx", "original_problem_idx", "original_solution_idx"]:
         if field in example:
             extra_info[field] = example[field]
+    
 
     # Optionally include the ground-truth answer as a dedicated target reference
     # for reward functions that support the 'target_gt' hint.
     if include_target_gt:
-        if verbose:
+        if verbose and idx == 0:
             print(
-                f"[transform_example] Added target_gt for idx={idx}: {str(example['solution']).strip()[:100]}"
+                f"[transform_example] Added target_gt for first example: {str(example['solution']).strip()[:100]}..."
             )
         extra_info["target_gt"] = str(example["solution"]).strip()
 
     # Preserve optional assistant prefix if upstream pipeline inserted one.
     if "assistant_prefix" in example:
-        if verbose:
+        if verbose and idx == 0:
             print(
-                f"[transform_example] Adding assistant_prefix for idx={idx}: {example['assistant_prefix']}"
+                f"[transform_example] Adding assistant_prefix for first example: {example['assistant_prefix']}"
             )
         extra_info["assistant_prefix"] = example["assistant_prefix"]
 
     # Add transformed ground truth if provided
     if transformed_solution is not None:
         extra_info["transformed_ground_truth"] = str(transformed_solution).strip()
-        if verbose:
+        if verbose and idx == 0:
             print(
-                f"[transform_example] Added transformed_ground_truth for idx={idx}: {str(transformed_solution).strip()[:100]}"
+                f"[transform_example] Added transformed_ground_truth for first example: {str(transformed_solution).strip()[:100]}..."
             )
 
     # Add LLM judge specific configuration
@@ -171,19 +178,18 @@ def transform_example(
                     print(f"[transform_example] Warning: {e}. Using default template.")
                 extra_info["prompt_template"] = get_prompt_template("default")
         
-        # Debug logging for LLM configuration
-        if verbose:
+        # Debug logging for LLM configuration (only for first example)
+        if verbose and idx == 0:
             llm_config = {
-                "problem": extra_info.get("problem"),
                 "model": extra_info.get("model"),
                 "temperature": extra_info.get("temperature"),
                 "max_tokens": extra_info.get("max_tokens"),
                 "timeout": extra_info.get("timeout"),
                 "thinking_enabled": extra_info.get("thinking_enabled"),
                 "thinking_budget": extra_info.get("thinking_budget"),
-                "prompt_template": extra_info.get("prompt_template")
+                "prompt_template": "..." if isinstance(extra_info.get("prompt_template"), str) else extra_info.get("prompt_template")
             }
-            print(f"[transform_example] LLM configuration added to extra_info for idx={idx}:")
+            print(f"[transform_example] LLM configuration (applied to all examples):")
             print(json.dumps(llm_config, indent=2))
 
     # Add BLEURT specific configuration
@@ -194,15 +200,15 @@ def transform_example(
         if bleurt_device:
             extra_info["device"] = bleurt_device
         
-        # Debug logging for BLEURT configuration
-        if verbose:
+        # Debug logging for BLEURT configuration (only for first example)
+        if verbose and idx == 0:
             bleurt_config = {
                 "length_penalty": extra_info.get("length_penalty"),
                 "length_threshold": extra_info.get("length_threshold"), 
                 "bleurt_checkpoint": extra_info.get("bleurt_checkpoint"),
                 "device": extra_info.get("device")
             }
-            print(f"[transform_example] BLEURT configuration added to extra_info for idx={idx}:")
+            print(f"[transform_example] BLEURT configuration (applied to all examples):")
             print(json.dumps(bleurt_config, indent=2))
 
     # Add Embedding specific configuration (shared between embedding and embedding_remote)
@@ -210,13 +216,13 @@ def transform_example(
         extra_info["length_penalty"] = embedding_length_penalty
         extra_info["length_threshold"] = embedding_length_threshold
         
-        # Debug logging for Embedding configuration
-        if verbose:
+        # Debug logging for Embedding configuration (only for first example)
+        if verbose and idx == 0:
             embedding_config = {
                 "length_penalty": extra_info.get("length_penalty"),
                 "length_threshold": extra_info.get("length_threshold")
             }
-            print(f"[transform_example] {match_type.title()} configuration added to extra_info for idx={idx}:")
+            print(f"[transform_example] {match_type.title()} configuration (applied to all examples):")
             print(json.dumps(embedding_config, indent=2))
 
     # Decide on *data_source* according to requested matching type.
@@ -252,10 +258,20 @@ def transform_example(
     }
 
     # For quick sanity-checking: print the structure of the record for the first
-    # few samples when *verbose* is enabled.
-    if verbose and idx < 3:
-        print("[transform_example] Preview of transformed record (truncated):")
-        print(json.dumps(record, indent=2, ensure_ascii=False)[:1000])
+    # sample when *verbose* is enabled.
+    if verbose and idx == 0:
+        print("[transform_example] Sample transformed record structure:")
+        preview_record = {
+            "data_source": record["data_source"],
+            "prompt": f"[{len(record['prompt'])} messages]",
+            "ability": record["ability"],
+            "reward_model": {
+                "style": record["reward_model"]["style"],
+                "ground_truth": f"{len(record['reward_model']['ground_truth'])} chars"
+            },
+            "extra_info": {k: f"{type(v).__name__}" for k, v in record["extra_info"].items()}
+        }
+        print(json.dumps(preview_record, indent=2, ensure_ascii=False))
 
     return record
 
@@ -385,6 +401,109 @@ def create_non_member_pairs(dataset, member_examples: List[dict], num_pairs: int
                 print(f"  Example {i}: member problem with solution from idx {solution_indices[i]}")
             else:
                 print(f"  Example {i}: problem from idx {problem_indices[i]}, solution from idx {solution_indices[i]}")
+    
+    return non_member_examples
+
+
+def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[dict], num_pairs: int, mode: str = "same_problem", seed: int = 42, verbose: bool = False, original_dataset=None, member_indices=None) -> List[dict]:
+    """
+    Create non-member data by using perturbed solutions from an external dataset.
+    
+    Args:
+        perturbed_dataset: The perturbed dataset with same structure as original but different solutions
+        member_examples: List of member examples (for same_problem mode)
+        num_pairs: Number of non-member pairs to create (equal to member data size)
+        mode: "same_problem" (use member problems with corresponding perturbed solutions) or "full_random" (randomly select problems from original dataset)
+        seed: Random seed for reproducible shuffling
+        verbose: Whether to print debug information
+        original_dataset: The original dataset (required for full_random mode)
+        member_indices: Original indices of member examples in the full dataset (required for same_problem mode)
+        
+    Returns:
+        List of examples with perturbed problem-solution pairs
+    """
+    rng = random.Random(seed)
+    
+    if mode == "same_problem":
+        # Mode 1: Use the same problems as members, but with corresponding perturbed solutions
+        if len(member_examples) != num_pairs:
+            raise ValueError(f"Member examples count ({len(member_examples)}) must equal num_pairs ({num_pairs}) for same_problem mode")
+        
+        if member_indices is None:
+            raise ValueError("member_indices is required for same_problem mode to maintain correspondence")
+        
+        if len(member_indices) != num_pairs:
+            raise ValueError(f"Member indices count ({len(member_indices)}) must equal num_pairs ({num_pairs}) for same_problem mode")
+        
+        # Create non-member examples using member problems with corresponding perturbed solutions
+        non_member_examples = []
+        for i in range(num_pairs):
+            member_ex = member_examples[i]
+            original_idx = member_indices[i]  # Use original index to get corresponding perturbed solution
+            perturbed_ex = perturbed_dataset[original_idx]  # Use original index for correct correspondence
+            
+            # Create new example with member problem but perturbed solution
+            non_member_ex = {
+                "problem": str(member_ex["problem"]).strip(),
+                "solution": str(perturbed_ex["solution"]).strip(),
+                "answer": str(perturbed_ex.get("answer", "")).strip(),  # Use answer from perturbed source
+                "subject": str(perturbed_ex.get("subject", "")).strip(),  # Use subject from perturbed source
+                "level": perturbed_ex.get("level", 0),  # Use level from perturbed source
+                "unique_id": str(member_ex.get("unique_id", "")).strip(),  # Keep member's unique_id
+                "is_member": False,
+            }
+            
+            non_member_examples.append(non_member_ex)
+    
+    elif mode == "full_random":
+        # Mode 2: Randomly select problems from the original dataset, with corresponding perturbed solutions
+        if original_dataset is None:
+            raise ValueError("original_dataset is required for full_random mode")
+        
+        if len(original_dataset) != len(perturbed_dataset):
+            raise ValueError(f"Original dataset size ({len(original_dataset)}) must match perturbed dataset size ({len(perturbed_dataset)})")
+        
+        # Randomly sample indices from the full original dataset
+        random_indices = rng.sample(range(len(original_dataset)), min(num_pairs, len(original_dataset)))
+        if len(original_dataset) < num_pairs:
+            # If we need more pairs than available, sample with replacement
+            additional_needed = num_pairs - len(original_dataset)
+            random_indices.extend(rng.choices(range(len(original_dataset)), k=additional_needed))
+        
+        # Create non-member examples using random problems with their corresponding perturbed solutions
+        non_member_examples = []
+        for i in range(num_pairs):
+            idx = random_indices[i]
+            original_ex = original_dataset[idx]  # Problem from original dataset
+            perturbed_ex = perturbed_dataset[idx]  # Corresponding perturbed solution
+            
+            # Use problem from original dataset, solution from perturbed dataset (maintaining i->i correspondence)
+            non_member_ex = {
+                "problem": str(original_ex["problem"]).strip(),  # Problem from original at random index
+                "solution": str(perturbed_ex["solution"]).strip(),  # Corresponding perturbed solution
+                "answer": str(perturbed_ex.get("answer", "")).strip(),  # Use answer from perturbed source
+                "subject": str(perturbed_ex.get("subject", "")).strip(),  # Use subject from perturbed source
+                "level": perturbed_ex.get("level", 0),  # Use level from perturbed source
+                "unique_id": str(original_ex.get("unique_id", "")).strip(),  # Keep original's unique_id
+                "is_member": False,
+            }
+            
+            non_member_examples.append(non_member_ex)
+    
+    else:
+        raise ValueError(f"Unknown perturbed pairing mode: {mode}. Choose 'same_problem' or 'full_random'.")
+    
+    if verbose:
+        print(f"[create_non_member_from_perturbed] Created {len(non_member_examples)} non-member examples using mode '{mode}'")
+        # Show a few examples of the pairing
+        for i in range(min(3, len(non_member_examples))):
+            if mode == "same_problem":
+                if member_indices:
+                    print(f"  Example {i}: member problem with perturbed solution from original idx {member_indices[i]}")
+                else:
+                    print(f"  Example {i}: member problem with corresponding perturbed solution")
+            else:
+                print(f"  Example {i}: random problem from original dataset with corresponding perturbed solution")
     
     return non_member_examples
 
@@ -588,9 +707,65 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
                 updated_non_member_data[non_member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
     
     if verbose:
-        print(f"[update_target_gt] Updated target_gt for {matches_found} matching problems")
+        if matches_found > 0:
+            print(f"[update_target_gt] Updated target_gt for {matches_found} matching problems")
+        else:
+            print(f"[update_target_gt] No matching problems found between member and non-member data")
     
     return updated_member_data, updated_non_member_data
+
+
+def remove_duplicate_problems(ds_members, ds_non_members, verbose: bool = False):
+    """
+    Remove non-member records that have the same problem text as member records.
+    
+    This is used in same_problem mode where we want to keep only the member record
+    (with correct ground truth) and remove the redundant non-member record 
+    (with incorrect ground truth) for the same problem.
+    
+    Args:
+        ds_members: Dataset containing member records
+        ds_non_members: Dataset containing non-member records
+        verbose: Whether to print debug information
+        
+    Returns:
+        Filtered non-member dataset with duplicates removed
+    """
+    # Collect all problem texts from member data
+    member_problems = set()
+    for i in range(len(ds_members)):
+        member_ex = ds_members[i]
+        problem_text = str(member_ex["prompt"][0]["content"]).strip()
+        member_problems.add(problem_text)
+    
+    # Filter non-member data to exclude problems that exist in member data
+    filtered_non_members = []
+    duplicates_removed = 0
+    
+    for i in range(len(ds_non_members)):
+        non_member_ex = ds_non_members[i]
+        problem_text = str(non_member_ex["prompt"][0]["content"]).strip()
+        
+        if problem_text not in member_problems:
+            # Keep non-member records with unique problems
+            filtered_non_members.append(non_member_ex)
+        else:
+            # Skip non-member records with problems that exist in member data
+            duplicates_removed += 1
+    
+    if verbose:
+        if duplicates_removed > 0:
+            print(f"[remove_duplicate_problems] Removed {duplicates_removed} duplicate non-member records")
+            print(f"[remove_duplicate_problems] Kept {len(filtered_non_members)} unique non-member records")
+        else:
+            print(f"[remove_duplicate_problems] No duplicate problems found - kept all {len(filtered_non_members)} non-member records")
+    
+    # Convert back to dataset
+    if filtered_non_members:
+        return datasets.Dataset.from_list(filtered_non_members)
+    else:
+        # Return empty dataset with same structure if no non-members remain
+        return datasets.Dataset.from_list([])
 
 
 def _write_jsonl(path: str, rows: List[dict]) -> None:
@@ -628,6 +803,16 @@ def main():
         help="Dataset split to use for transformed dataset (default: train)",
     )
     parser.add_argument(
+        "--perturbed_dataset_path",
+        default=None,
+        help="Optional HuggingFace dataset path containing perturbed solutions for MIA non-member generation",
+    )
+    parser.add_argument(
+        "--perturbed_dataset_split",
+        default="train",
+        help="Dataset split to use for perturbed dataset (default: train)",
+    )
+    parser.add_argument(
         "--match_type",
         choices=["lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"],
         default="lexical",
@@ -643,7 +828,8 @@ def main():
         action="store_true",
         help=(
             "If set, include the ground-truth solution as 'target_gt' in extra_info so that "
-            "reward functions can filter references."
+            "reward functions can filter references. This also removes duplicate non-member "
+            "records that have the same problems as members to avoid storing redundant data."
         ),
     )
     parser.add_argument(
@@ -690,12 +876,13 @@ def main():
     )
     parser.add_argument(
         "--mia_nonmember_method",
-        choices=["random_pairing", "unused_examples"],
+        choices=["random_pairing", "unused_examples", "perturbed_solution"],
         default="unused_examples",
         help=(
             "Method for creating non-member data: "
             "'random_pairing' (original method: randomly pair problems with solutions), "
-            "'unused_examples' (safer method: use examples not seen during fine-tuning)."
+            "'unused_examples' (safer method: use examples not seen during fine-tuning), "
+            "'perturbed_solution' (use perturbed solutions from external dataset)."
         ),
     )
     parser.add_argument(
@@ -703,9 +890,9 @@ def main():
         choices=["same_problem", "full_random"],
         default="same_problem",
         help=(
-            "Mode for random pairing method: "
-            "'same_problem' (use member problems with random solutions), "
-            "'full_random' (randomly select from full dataset)."
+            "Mode for random pairing and perturbed solution methods: "
+            "'same_problem' (use member problems with random/perturbed solutions), "
+            "'full_random' (randomly select problems from full dataset with corresponding solutions)."
         ),
     )
     parser.add_argument(
@@ -836,6 +1023,19 @@ def main():
             raise ValueError(
                 f"Transformed dataset size ({len(ds_transformed)}) does not match main dataset size ({len(ds_full)})"
             )
+    
+    # Load perturbed dataset if provided and using perturbed_solution method
+    ds_perturbed = None
+    if args.mia and args.mia_nonmember_method == "perturbed_solution":
+        if not args.perturbed_dataset_path:
+            raise ValueError("perturbed_dataset_path is required when using mia_nonmember_method='perturbed_solution'")
+        ds_perturbed = datasets.load_dataset(args.perturbed_dataset_path, split=args.perturbed_dataset_split)
+        if args.verbose:
+            print(f"[main] Loaded {len(ds_perturbed)} perturbed examples from {args.perturbed_dataset_path} ({args.perturbed_dataset_split} split)")
+        if len(ds_perturbed) != len(ds_full):
+            raise ValueError(
+                f"Perturbed dataset size ({len(ds_perturbed)}) does not match main dataset size ({len(ds_full)})"
+            )
 
     # Determine the actual fine-tuning subset size
     finetune_size = args.finetune_subset_size if args.finetune_subset_size is not None else args.subset_size
@@ -923,11 +1123,13 @@ def main():
         print(f"Non-member generation method: {args.mia_nonmember_method}")
         
         # Create member data from subsampled dataset
-        print(f"Creating member data from {len(ds_members_subset)} subsampled examples...")
+        print(f"Creating member data from {len(ds_members_subset)} examples...")
         
         # Add is_member field to member examples before transformation
         ds_members_with_flag = ds_members_subset.map(add_member_flag, with_indices=True)
         ds_members = ds_members_with_flag.map(transform_fn, with_indices=True, remove_columns=ds_members_with_flag.column_names)
+        if args.verbose:
+            print(f"[main] Member data created: {len(ds_members)} records")
         
         # Create non-member data using selected method
         if args.mia_nonmember_method == "random_pairing":
@@ -957,7 +1159,7 @@ def main():
             )
             final_member_indices = member_indices  # No subsampling needed
         elif args.mia_nonmember_method == "unused_examples":
-            print(f"Creating non-member examples from unused dataset entries (not seen during fine-tuning)...")
+            print(f"Creating non-member examples from unused dataset entries...")
             
             #* Get the fine-tuning indices (what was actually used for training) *#
             finetune_rng = random.Random(args.subset_seed)
@@ -965,8 +1167,7 @@ def main():
             finetune_indices.sort()
             
             if args.verbose:
-                print(f"[main] Fine-tuning used {len(finetune_indices)} examples: {finetune_indices[:10]}..." if len(finetune_indices) > 10 else f"[main] Fine-tuning indices: {finetune_indices}")
-                print(f"[main] Member data uses {len(member_indices)} examples: {member_indices[:10]}..." if len(member_indices) > 10 else f"[main] Member indices: {member_indices}")
+                print(f"[main] Fine-tuning used {len(finetune_indices)} examples, {len(ds_full) - len(finetune_indices)} unused")
             
             non_member_examples, final_member_indices = create_non_member_from_unused(
                 ds_full, finetune_indices, num_pairs=len(ds_members_subset), 
@@ -977,21 +1178,51 @@ def main():
             if len(final_member_indices) < len(member_indices):
                 print(f"Note: Subsampled member data from {len(member_indices)} to {len(final_member_indices)} examples to match available non-members")
                 ds_members_subset = ds_full.select(final_member_indices)
+        elif args.mia_nonmember_method == "perturbed_solution":
+            print(f"Creating {len(ds_members_subset)} non-member examples with perturbed solutions mode '{args.random_pairing_mode}'...")
+            
+            # Convert member dataset to list of examples for perturbed solution method
+            member_examples_list = []
+            for i in range(len(ds_members_subset)):
+                ex = ds_members_subset[i]
+                member_ex = {
+                    "problem": str(ex["problem"]).strip(),
+                    "solution": str(ex["solution"]).strip(),
+                    "answer": str(ex.get("answer", "")).strip(),
+                    "subject": str(ex.get("subject", "")).strip(),
+                    "level": ex.get("level", 0),
+                    "unique_id": str(ex.get("unique_id", "")).strip(),
+                }
+                member_examples_list.append(member_ex)
+            
+            non_member_examples = create_non_member_from_perturbed(
+                ds_perturbed, 
+                member_examples=member_examples_list,
+                num_pairs=len(ds_members_subset), 
+                mode=args.random_pairing_mode,
+                seed=args.subset_seed + 1, 
+                verbose=args.verbose,
+                original_dataset=ds_full,
+                member_indices=member_indices
+            )
+            final_member_indices = member_indices  # No subsampling needed
         else:
             raise ValueError(f"Unknown non-member method: {args.mia_nonmember_method}")
         
         ds_non_members_raw = datasets.Dataset.from_list(non_member_examples)
         ds_non_members = ds_non_members_raw.map(transform_fn, with_indices=True, remove_columns=ds_non_members_raw.column_names)
+        if args.verbose:
+            print(f"[main] Non-member data created: {len(ds_non_members)} records")
         
-        # Handle target_gt updates for matching problems if include_target_gt is True
-        if args.include_target_gt and args.mia_nonmember_method == "random_pairing" and args.random_pairing_mode == "same_problem":
-            print("Updating target_gt for matching problems between member and non-member data...")
+        # Handle target_gt updates and deduplication if include_target_gt is True
+        if args.include_target_gt and args.mia_nonmember_method in ["random_pairing", "perturbed_solution"]:
+            print("Checking for matching problems between member and non-member data...")
             
             # Convert datasets to lists for processing
             member_data_list = [ds_members[i] for i in range(len(ds_members))]
             non_member_data_list = [ds_non_members[i] for i in range(len(ds_non_members))]
             
-            # Update target_gt for matching problems
+            # Always check for matching problems and update target_gt if matches are found
             updated_member_data, updated_non_member_data = update_target_gt_for_matching_problems(
                 member_data_list, non_member_data_list, verbose=args.verbose
             )
@@ -999,6 +1230,10 @@ def main():
             # Convert back to datasets
             ds_members = datasets.Dataset.from_list(updated_member_data)
             ds_non_members = datasets.Dataset.from_list(updated_non_member_data)
+            
+            # Remove duplicate non-member records (will match the problems that had target_gt updated)
+            print("Removing duplicate non-member records with same problems as members...")
+            ds_non_members = remove_duplicate_problems(ds_members, ds_non_members, verbose=args.verbose)
         
         # Combine member and non-member data for the final training set
         ds_combined = datasets.concatenate_datasets([ds_members, ds_non_members])
@@ -1007,15 +1242,22 @@ def main():
         ds_transformed = ds_combined.shuffle(seed=args.subset_seed)
         
         if args.verbose:
-            print(f"[main] Created combined dataset: {len(ds_members)} members + {len(ds_non_members)} non-members = {len(ds_transformed)} total")
+            if args.include_target_gt and args.mia_nonmember_method in ["random_pairing", "perturbed_solution"]:
+                print(f"[main] Created combined dataset: {len(ds_members)} members + {len(ds_non_members)} non-members (after deduplication) = {len(ds_transformed)} total")
+            else:
+                print(f"[main] Created combined dataset: {len(ds_members)} members + {len(ds_non_members)} non-members = {len(ds_transformed)} total")
     else:
         # Standard mode: Just transform the subsampled dataset
         ds_transformed = ds_members_subset.map(transform_fn, with_indices=True, remove_columns=ds_members_subset.column_names)
 
     if args.verbose:
-        print("\n[main] Finished transformation – preview of transformed record(s):")
-        preview_recs = ds_transformed[:2]
-        print(json.dumps(preview_recs, indent=2, ensure_ascii=False)[:1500])
+        print(f"\n[main] Transformation completed - {len(ds_transformed)} records created")
+        print(f"[main] Data source: {ds_transformed[0]['data_source'] if len(ds_transformed) > 0 else 'N/A'}")
+        print(f"[main] Match type: {args.match_type}")
+        if args.mia:
+            member_count = sum(1 for record in ds_transformed if record.get('extra_info', {}).get('is_member', False))
+            non_member_count = len(ds_transformed) - member_count
+            print(f"[main] MIA data: {member_count} members, {non_member_count} non-members")
 
     # Persist to local disk
     output_dir = os.path.expanduser(args.output_dir)
@@ -1078,6 +1320,8 @@ def main():
             elif args.mia_nonmember_method == "unused_examples":
                 row["pair_type"] = "unused_original"
                 row["original_idx"] = ex.get("original_idx", -1)
+            elif args.mia_nonmember_method == "perturbed_solution":
+                row["pair_type"] = "perturbed"
             
             nonmembers_rows.append(row)
 
@@ -1091,21 +1335,15 @@ def main():
         # Verification
         if args.verbose:
             print(f"\n=== MIA Data Verification ===")
-            print(f"Members sample:")
-            for i in range(min(2, len(members_rows))):
-                row = members_rows[i]
-                print(f"  {i}: problem[:50]={row['problem'][:50]}...")
-                print(f"      solution[:50]={row['solution'][:50]}...")
-            
-            print(f"Non-members sample:")
-            for i in range(min(2, len(nonmembers_rows))):
-                row = nonmembers_rows[i]
-                print(f"  {i}: problem[:50]={row['problem'][:50]}...")
-                print(f"      solution[:50]={row['solution'][:50]}...")
-                if args.mia_nonmember_method == "random_pairing":
-                    print(f"      (mismatched: problem from idx {row.get('original_problem_idx', -1)}, solution from idx {row.get('original_solution_idx', -1)})")
-                elif args.mia_nonmember_method == "unused_examples":
-                    print(f"      (unused original pair from idx {row.get('original_idx', -1)})")
+            print(f"Members: {len(members_rows)} examples (original problem-solution pairs)")
+            print(f"Non-members: {len(nonmembers_rows)} examples ({args.mia_nonmember_method} method)")
+            if len(members_rows) > 0:
+                sample_member = members_rows[0]
+                print(f"Sample member problem: {sample_member['problem'][:80]}...")
+            if len(nonmembers_rows) > 0:
+                sample_nonmember = nonmembers_rows[0]
+                print(f"Sample non-member problem: {sample_nonmember['problem'][:80]}...")
+                print(f"Non-member method: {args.mia_nonmember_method}")
 
 
 if __name__ == "__main__":
