@@ -700,11 +700,36 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
                     unique_solutions.append(sol)
             
             # Update all matching entries with the combined target_gt
+            # Also store separate member/non-member ground truths for MIA evaluation
             for member_idx in member_indices:
+                member_ex = updated_member_data[member_idx]
+                original_member_gt = member_ex["reward_model"]["ground_truth"]
+                
                 updated_member_data[member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
+                # Store separate ground truths for MIA evaluation
+                updated_member_data[member_idx]["extra_info"]["member_ground_truth"] = original_member_gt
+                if len(unique_solutions) > 1:
+                    # Find the non-member ground truth (the one that's not the member's)
+                    nonmember_gt = unique_solutions[1] if unique_solutions[0] == original_member_gt else unique_solutions[0]
+                    updated_member_data[member_idx]["extra_info"]["nonmember_ground_truth"] = nonmember_gt
+                    updated_member_data[member_idx]["extra_info"]["has_nonmember_gt"] = True
+                else:
+                    updated_member_data[member_idx]["extra_info"]["has_nonmember_gt"] = False
             
             for non_member_idx in non_member_indices:
+                non_member_ex = updated_non_member_data[non_member_idx]
+                original_nonmember_gt = non_member_ex["reward_model"]["ground_truth"]
+                
                 updated_non_member_data[non_member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
+                # Store separate ground truths for MIA evaluation  
+                updated_non_member_data[non_member_idx]["extra_info"]["nonmember_ground_truth"] = original_nonmember_gt
+                if len(unique_solutions) > 1:
+                    # Find the member ground truth (the one that's not the non-member's)
+                    member_gt = unique_solutions[1] if unique_solutions[0] == original_nonmember_gt else unique_solutions[0]
+                    updated_non_member_data[non_member_idx]["extra_info"]["member_ground_truth"] = member_gt
+                    updated_non_member_data[non_member_idx]["extra_info"]["has_nonmember_gt"] = True
+                else:
+                    updated_non_member_data[non_member_idx]["extra_info"]["has_nonmember_gt"] = False
     
     if verbose:
         if matches_found > 0:
