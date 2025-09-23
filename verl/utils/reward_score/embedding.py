@@ -158,7 +158,8 @@ def _load_qwen3_model(model_size: str = "0.6B") -> Tuple[Any, int]:
                     model_name,
                     model_kwargs={
                         "attn_implementation": "flash_attention_2", 
-                        "device_map": "auto",
+                        # Use single device instead of auto to prevent multi-GPU distribution
+                        "device_map": {"": "cuda:0"},
                         "dtype": torch.float16
                     },
                     tokenizer_kwargs={"padding_side": "left"},
@@ -177,7 +178,8 @@ def _load_qwen3_model(model_size: str = "0.6B") -> Tuple[Any, int]:
                         model_name,
                         model_kwargs={
                             "attn_implementation": "flash_attention_2", 
-                            "device_map": "auto",
+                            # Use single device instead of auto to prevent multi-GPU distribution
+                        "device_map": {"": "cuda:0"},
                             "dtype": torch.bfloat16
                         },
                         tokenizer_kwargs={"padding_side": "left"},
@@ -203,7 +205,8 @@ def _load_qwen3_model(model_size: str = "0.6B") -> Tuple[Any, int]:
                 model = SentenceTransformer(
                     model_name,
                     model_kwargs={
-                        "device_map": "auto",
+                        # Use single device instead of auto to prevent multi-GPU distribution
+                        "device_map": {"": "cuda:0"},
                         "dtype": torch.float32  # Use float32 for better compatibility
                     },
                     tokenizer_kwargs={"padding_side": "left"},
