@@ -1,0 +1,102 @@
+"""
+Prompt templates for LLM judge evaluation.
+
+This module contains various prompt templates for evaluating solution similarity
+using LLM-as-a-judge. Templates are stored as simple string constants and can be
+accessed by name or used directly.
+"""
+
+# Default prompt template - concise and focused
+DEFAULT_PROMPT_TEMPLATE = """
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
+
+INPUTS
+- Problem:
+{PROBLEM}
+
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+OUTPUT FORMAT (must follow exactly)
+Output ONLY one line:
+REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
+# Detailed prompt template - includes reasoning steps
+DETAILED_PROMPT_TEMPLATE = """
+You are an expert mathematics teacher evaluating the similarity between two solutions to a math problem. You need to rate how similar the candidate solution is to the reference solution.
+
+EVALUATION CRITERIA:
+1. Mathematical correctness - Are both solutions mathematically sound?
+2. Solution approach - Do they use similar methods or reasoning?
+3. Final answer - Do they arrive at the same conclusion?
+4. Presentation clarity - Are the explanations similarly structured?
+
+INPUTS
+- Problem:
+{PROBLEM}
+
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+INSTRUCTIONS:
+1. First, analyze the mathematical correctness of both solutions
+2. Compare the approaches and reasoning used
+3. Evaluate how well the candidate matches the reference
+4. Assign a similarity score from 0 to 1 where:
+   - 0.0-0.3: Very different (wrong answer or completely different approach)
+   - 0.4-0.6: Somewhat similar (some overlap but significant differences)
+   - 0.7-0.8: Quite similar (similar approach and correct answer)
+   - 0.9-1.0: Very similar (nearly identical reasoning and presentation)
+
+Think through your evaluation step by step, then provide your final score.
+
+OUTPUT FORMAT (must follow exactly)
+After your reasoning, output ONLY one line:
+REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
+# Template name mapping
+PROMPT_TEMPLATES = {
+    "default": DEFAULT_PROMPT_TEMPLATE,
+    "detailed": DETAILED_PROMPT_TEMPLATE,
+}
+
+
+def get_prompt_template(template_name: str) -> str:
+    """
+    Get a prompt template by name.
+    
+    Args:
+        template_name: Name of the template ("default", "detailed")
+        
+    Returns:
+        The prompt template string
+        
+    Raises:
+        ValueError: If template name is not found
+    """
+    if template_name in PROMPT_TEMPLATES:
+        return PROMPT_TEMPLATES[template_name]
+    else:
+        available_templates = list(PROMPT_TEMPLATES.keys())
+        raise ValueError(
+            f"Unknown prompt template: '{template_name}'. "
+            f"Available templates: {available_templates}"
+        )
+
+
+def get_default_template() -> str:
+    """Get the default prompt template."""
+    return DEFAULT_PROMPT_TEMPLATE
+
+
+def list_available_templates() -> list:
+    """List all available template names."""
+    return list(PROMPT_TEMPLATES.keys())
