@@ -126,6 +126,16 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
             extra_info=extra_info,
             metric=metric_from_extra or "levenshtein",
         )
+    elif data_source.startswith("llm_judge_remote"):
+        # Remote LLM-as-a-judge reward using vLLM server to evaluate similarity
+        from . import llm_judge_remote
+
+        res = llm_judge_remote.compute_score(
+            data_source=data_source,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            extra_info=extra_info,
+        )
     elif data_source.startswith("llm_judge"):
         # LLM-as-a-judge reward using API calls to evaluate similarity
         from . import llm_judge
