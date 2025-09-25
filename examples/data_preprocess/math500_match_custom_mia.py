@@ -77,6 +77,7 @@ def transform_example(
     llm_prompt_template: str = "default",
     llm_thinking_enabled: bool = True,
     llm_thinking_budget: int = 2048,
+    llm_batch_size: int = 128,
     # BLEURT-specific parameters
     bleurt_checkpoint: str = "lucadiliello/BLEURT-20",
     bleurt_length_penalty: str = "none",
@@ -108,9 +109,9 @@ def transform_example(
         Print extra information while transforming – useful for debugging.
     """
 
-    if match_type not in {"lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"}:
+    if match_type not in {"lexical", "embedding", "embedding_remote", "llm_judge", "llm_judge_remote", "bleurt"}:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'embedding_remote', 'llm_judge', or 'bleurt'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'embedding_remote', 'llm_judge', 'llm_judge_remote', or 'bleurt'."
         )
 
     # Construct *extra_info* section – accessible by the reward loader so that
@@ -156,18 +157,22 @@ def transform_example(
                 f"[transform_example] Added transformed_ground_truth for first example: {str(transformed_solution).strip()[:100]}..."
             )
 
-    # Add LLM judge specific configuration
-    if match_type == "llm_judge":
+    # Add LLM judge specific configuration (both local and remote)
+    if match_type in ["llm_judge", "llm_judge_remote"]:
         # Add problem context for LLM judge prompt formatting
         extra_info["problem"] = str(example["problem"]).strip()
         
         # Add LLM configuration
         extra_info["model"] = llm_model
+        extra_info["model_name"] = llm_model  # For compatibility with remote client
         extra_info["temperature"] = llm_temperature
         extra_info["max_tokens"] = llm_max_tokens
+        extra_info["max_new_tokens"] = llm_max_tokens  # For compatibility with remote client
         extra_info["timeout"] = llm_timeout
         extra_info["thinking_enabled"] = llm_thinking_enabled
+        extra_info["enable_thinking"] = llm_thinking_enabled  # For compatibility with remote client
         extra_info["thinking_budget"] = llm_thinking_budget
+        extra_info["batch_size"] = llm_batch_size
         
         # Add prompt template for LLM judge from configuration
         if "prompt_template" not in extra_info:
@@ -182,14 +187,18 @@ def transform_example(
         if verbose and idx == 0:
             llm_config = {
                 "model": extra_info.get("model"),
+                "model_name": extra_info.get("model_name"),
                 "temperature": extra_info.get("temperature"),
                 "max_tokens": extra_info.get("max_tokens"),
+                "max_new_tokens": extra_info.get("max_new_tokens"),
                 "timeout": extra_info.get("timeout"),
                 "thinking_enabled": extra_info.get("thinking_enabled"),
+                "enable_thinking": extra_info.get("enable_thinking"),
                 "thinking_budget": extra_info.get("thinking_budget"),
+                "batch_size": extra_info.get("batch_size"),
                 "prompt_template": "..." if isinstance(extra_info.get("prompt_template"), str) else extra_info.get("prompt_template")
             }
-            print(f"[transform_example] LLM configuration (applied to all examples):")
+            print(f"[transform_example] LLM Judge ({match_type}) configuration (applied to all examples):")
             print(json.dumps(llm_config, indent=2))
 
     # Add BLEURT specific configuration
@@ -234,11 +243,13 @@ def transform_example(
         data_source = "embedding_remote_match_custom"
     elif match_type == "llm_judge":
         data_source = "llm_judge_custom"
+    elif match_type == "llm_judge_remote":
+        data_source = "llm_judge_remote_custom"
     elif match_type == "bleurt":
         data_source = "bleurt_match_custom"
     else:
         raise ValueError(
-            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'embedding_remote', 'llm_judge', or 'bleurt'."
+            f"Unsupported match_type: {match_type!r}. Choose 'lexical', 'embedding', 'embedding_remote', 'llm_judge', 'llm_judge_remote', or 'bleurt'."
         )
 
     # Build the verl record.
@@ -839,9 +850,9 @@ def main():
     )
     parser.add_argument(
         "--match_type",
-        choices=["lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"],
+        choices=["lexical", "embedding", "embedding_remote", "llm_judge", "llm_judge_remote", "bleurt"],
         default="lexical",
-        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (local FastText similarity), embedding_remote (remote TEI server similarity), llm_judge (LLM-as-a-judge evaluation), or bleurt (BLEURT-based evaluation).",
+        help="Choose reward type: lexical (BM25/ratio/etc.), embedding (local FastText similarity), embedding_remote (remote TEI server similarity), llm_judge (LLM-as-a-judge evaluation), llm_judge_remote (remote vLLM server LLM-as-a-judge), or bleurt (BLEURT-based evaluation).",
     )
     parser.add_argument(
         "--metric",
@@ -969,6 +980,12 @@ def main():
         type=int,
         default=2048,
         help="Number of tokens allocated for thinking in Gemini models (default: 2048).",
+    )
+    parser.add_argument(
+        "--llm_batch_size",
+        type=int,
+        default=128,
+        help="Batch size for LLM judge remote processing (default: 1).",
     )
     parser.add_argument(
         "--bleurt_checkpoint",
@@ -1131,6 +1148,7 @@ def main():
             llm_prompt_template=args.llm_prompt_template,
             llm_thinking_enabled=args.llm_thinking_enabled,
             llm_thinking_budget=args.llm_thinking_budget,
+            llm_batch_size=args.llm_batch_size,
             bleurt_checkpoint=args.bleurt_checkpoint,
             bleurt_length_penalty=args.bleurt_length_penalty,
             bleurt_length_threshold=args.bleurt_length_threshold,

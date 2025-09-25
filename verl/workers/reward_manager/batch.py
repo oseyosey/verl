@@ -28,8 +28,16 @@ class BatchRewardManager:
         self.compute_score = compute_score
         self.reward_fn_key = reward_fn_key
         self.reward_kwargs = reward_kwargs
+        
+        # Progress tracking
+        self.total_batches_processed = 0
+        self.total_samples_processed = 0
+        self.cumulative_time = 0.0
 
     def verify(self, data):
+        from tqdm import tqdm
+        import time
+        
         prompt_ids = data.batch["prompts"]
         response_ids = data.batch["responses"]
         attention_mask = data.batch["attention_mask"]
@@ -48,13 +56,40 @@ class BatchRewardManager:
         data_sources = data.non_tensor_batch[self.reward_fn_key]
         extras = data.non_tensor_batch.get("extra_info", [None] * len(data))
 
-        scores = self.compute_score(
-            data_sources=data_sources,
-            solution_strs=responses_str,
-            ground_truths=ground_truths,
-            extra_infos=extras,
-            **self.reward_kwargs,
-        )
+        # Add progress bar for batch processing
+        batch_size = len(data)
+        self.total_batches_processed += 1
+        
+        # Create informative description
+        desc = f"Batch reward #{self.total_batches_processed} ({batch_size} samples)"
+        
+        start_time = time.time()
+        with tqdm(total=1, desc=desc, unit="batch", leave=True) as pbar:
+            scores = self.compute_score(
+                data_sources=data_sources,
+                solution_strs=responses_str,
+                ground_truths=ground_truths,
+                extra_infos=extras,
+                **self.reward_kwargs,
+            )
+            
+            end_time = time.time()
+            processing_time = end_time - start_time
+            samples_per_sec = batch_size / processing_time if processing_time > 0 else 0
+            
+            # Update cumulative stats
+            self.total_samples_processed += batch_size
+            self.cumulative_time += processing_time
+            avg_samples_per_sec = self.total_samples_processed / self.cumulative_time if self.cumulative_time > 0 else 0
+            
+            pbar.set_postfix({
+                'samples': batch_size,
+                'time': f"{processing_time:.2f}s",
+                'samples/s': f"{samples_per_sec:.1f}",
+                'total': self.total_samples_processed,
+                'avg_s/s': f"{avg_samples_per_sec:.1f}"
+            })
+            pbar.update(1)
 
         return scores
 

@@ -10,6 +10,13 @@ accessed by name or used directly.
 DEFAULT_PROMPT_TEMPLATE = """
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
+EVALUATION CRITERIA:
+1. Mathematical correctness - Are candidate solution mathematically sound as the reference solution?
+2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
+3. Final answer - Do candidate solution arrive at the same conclusion as the reference solution?
+4. Overall clarity - Are the reasoning and solution steps correct, sonsistent, and logically sound as the reference solution?
+
+
 INPUTS
 - Problem:
 {PROBLEM}
