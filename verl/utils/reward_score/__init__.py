@@ -15,22 +15,54 @@
 
 from verl.utils.import_utils import deprecated
 
-def default_compute_score(data_source, solution_str, ground_truth, extra_info=None, sandbox_fusion_url=None, concurrent_semaphore=None):
+def default_compute_score(
+    data_source=None, 
+    solution_str=None, 
+    ground_truth=None, 
+    extra_info=None, 
+    sandbox_fusion_url=None, 
+    concurrent_semaphore=None,
+    # Batched arguments (for BatchRewardManager compatibility)
+    data_sources=None,
+    solution_strs=None,
+    ground_truths=None,
+    extra_infos=None,
+):
     """Compute the score for a given solution based on the data source.
+    
+    Supports both single-sample and batched interfaces:
+    - Single: data_source, solution_str, ground_truth, extra_info
+    - Batched: data_sources, solution_strs, ground_truths, extra_infos
 
     Args:
-        data_source (str): The source dataset identifier which determines the scoring method.
-        solution_str (str): The solution string to be evaluated.
-        ground_truth (str): The ground truth answer for comparison.
+        data_source (str, optional): The source dataset identifier which determines the scoring method.
+        solution_str (str, optional): The solution string to be evaluated.
+        ground_truth (str, optional): The ground truth answer for comparison.
         extra_info (dict, optional): Additional information that might be needed for scoring. Defaults to None.
+        data_sources (List[str], optional): List of source dataset identifiers for batch processing.
+        solution_strs (List[str], optional): List of solution strings to be evaluated.
+        ground_truths (List[str], optional): List of ground truth answers for comparison.
+        extra_infos (List[dict], optional): List of additional information for batch processing.
 
     Returns:
-        float: The computed score as a floating point number. If the result is a dictionary,
+        float or List[float]: The computed score(s) as floating point number(s). If the result is a dictionary,
                it returns the dictionary instead.
 
     Raises:
         NotImplementedError: If the reward function is not implemented for the given data source.
     """
+    # Handle batched interface
+    if data_sources is not None:
+        return _default_compute_score_batched(
+            data_sources=data_sources,
+            solution_strs=solution_strs,
+            ground_truths=ground_truths,
+            extra_infos=extra_infos,
+            sandbox_fusion_url=sandbox_fusion_url,
+            concurrent_semaphore=concurrent_semaphore,
+        )
+    
+    # Handle single interface (original logic)
     # breakpoint() # to check for data source # TODO: figure out how to debug in ray cluster.
     if data_source == "openai/gsm8k":
         from . import gsm8k
@@ -165,6 +197,78 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
         return float(res)
     else:
         return float(res[0])
+
+
+def _default_compute_score_batched(
+    data_sources, 
+    solution_strs, 
+    ground_truths, 
+    extra_infos=None, 
+    sandbox_fusion_url=None, 
+    concurrent_semaphore=None
+):
+    """
+    Batched version of default_compute_score for BatchRewardManager compatibility.
+    
+    This function routes to the appropriate batched implementations where available,
+    or falls back to sequential processing for unsupported data sources.
+    """
+    # Handle None or empty inputs (use len() to avoid array truth value ambiguity)
+    if data_sources is None or len(data_sources) == 0:
+        raise ValueError("data_sources must be provided for batched processing")
+    if solution_strs is None or len(solution_strs) == 0:
+        raise ValueError("solution_strs must be provided for batched processing")
+    if ground_truths is None or len(ground_truths) == 0:
+        raise ValueError("ground_truths must be provided for batched processing")
+    
+    if len(data_sources) != len(solution_strs) or len(data_sources) != len(ground_truths):
+        raise ValueError("data_sources, solution_strs, and ground_truths must have the same length")
+    
+    # Handle extra_infos default
+    if extra_infos is None:
+        extra_infos = [None] * len(data_sources)
+    elif len(extra_infos) != len(data_sources):
+        raise ValueError("extra_infos must have the same length as data_sources")
+    
+    # Check if all data sources are the same and support native batching
+    unique_sources = set(data_sources)
+    
+    if len(unique_sources) == 1:
+        data_source = next(iter(unique_sources))
+        
+        # Use native batched implementations where available
+        if data_source.startswith("llm_judge_remote"):
+            from . import llm_judge_remote
+            return llm_judge_remote.compute_score(
+                data_sources=data_sources,
+                solution_strs=solution_strs,
+                ground_truths=ground_truths,
+                extra_infos=extra_infos,
+            )
+        elif data_source.startswith("embedding_remote"):
+            from . import embedding_remote
+            return embedding_remote.compute_score(
+                data_sources=data_sources,
+                solution_strs=solution_strs,
+                ground_truths=ground_truths,
+                extra_infos=extra_infos,
+            )
+        # Add more batched implementations here as needed
+    
+    # Fallback: sequential processing for mixed data sources or unsupported batching
+    results = []
+    for i in range(len(data_sources)):
+        result = default_compute_score(
+            data_source=data_sources[i],
+            solution_str=solution_strs[i],
+            ground_truth=ground_truths[i],
+            extra_info=extra_infos[i],
+            sandbox_fusion_url=sandbox_fusion_url,
+            concurrent_semaphore=concurrent_semaphore,
+        )
+        results.append(result)
+    
+    return results
 
 
 @deprecated("verl.utils.reward_score.default_compute_score")
