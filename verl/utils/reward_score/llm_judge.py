@@ -408,11 +408,19 @@ def _format_prompt(
     Returns:
         Formatted prompt string
     """
-    return prompt_template.format(
-        PROBLEM=problem.strip(),
-        REFERENCE_SOLUTION=reference_solution.strip(),
-        CANDIDATE_SOLUTION=candidate_solution.strip()
-    )
+    # Check if PROBLEM placeholder exists in template
+    if "{PROBLEM}" in prompt_template:
+        return prompt_template.format(
+            PROBLEM=problem.strip(),
+            REFERENCE_SOLUTION=reference_solution.strip(),
+            CANDIDATE_SOLUTION=candidate_solution.strip()
+        )
+    else:
+        # Only format REFERENCE_SOLUTION and CANDIDATE_SOLUTION
+        return prompt_template.format(
+            REFERENCE_SOLUTION=reference_solution.strip(),
+            CANDIDATE_SOLUTION=candidate_solution.strip()
+        )
 
 
 def _get_llm_config_from_extra_info(extra_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:

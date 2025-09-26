@@ -55,11 +55,15 @@ from verl.utils.fs import copy, makedirs  # type: ignore
 try:
     from .llm_judge_prompts import get_prompt_template, list_available_templates
 except ImportError:
-    # Handle case when running as script directly
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(__file__))
-    from llm_judge_prompts import get_prompt_template, list_available_templates
+    # Handle case when running as script directly - import from reward_score module
+    try:
+        from verl.utils.reward_score.llm_judge_prompts import get_prompt_template, list_available_templates
+    except ImportError:
+        # Final fallback to local file if module import fails
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from llm_judge_prompts import get_prompt_template, list_available_templates
 
 
 def transform_example(
@@ -174,14 +178,16 @@ def transform_example(
         extra_info["thinking_budget"] = llm_thinking_budget
         extra_info["batch_size"] = llm_batch_size
         
-        # Add prompt template for LLM judge from configuration
+        # Add prompt template name for LLM judge from configuration
         if "prompt_template" not in extra_info:
             try:
-                extra_info["prompt_template"] = get_prompt_template(llm_prompt_template)
+                # Validate template name exists, but store the name, not the full template
+                get_prompt_template(llm_prompt_template)  # Just to validate it exists
+                extra_info["prompt_template"] = llm_prompt_template
             except ValueError as e:
                 if verbose:
                     print(f"[transform_example] Warning: {e}. Using default template.")
-                extra_info["prompt_template"] = get_prompt_template("default")
+                extra_info["prompt_template"] = "default"
         
         # Debug logging for LLM configuration (only for first example)
         if verbose and idx == 0:
@@ -196,7 +202,7 @@ def transform_example(
                 "enable_thinking": extra_info.get("enable_thinking"),
                 "thinking_budget": extra_info.get("thinking_budget"),
                 "batch_size": extra_info.get("batch_size"),
-                "prompt_template": "..." if isinstance(extra_info.get("prompt_template"), str) else extra_info.get("prompt_template")
+                "prompt_template": extra_info.get("prompt_template")
             }
             print(f"[transform_example] LLM Judge ({match_type}) configuration (applied to all examples):")
             print(json.dumps(llm_config, indent=2))

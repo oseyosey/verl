@@ -48,6 +48,8 @@ import re
 from typing import List, Optional, Dict, Any
 from functools import lru_cache
 
+import pdb
+
 # Try to import LLM judge client
 try:
     from ...utils_rl.llm_judge_client import LLMJudgeClient, get_default_client
@@ -200,11 +202,19 @@ def _format_prompt(
     Returns:
         Formatted prompt string
     """
-    return prompt_template.format(
-        PROBLEM=problem.strip(),
-        REFERENCE_SOLUTION=reference_solution.strip(),
-        CANDIDATE_SOLUTION=candidate_solution.strip()
-    )
+    # Check if PROBLEM placeholder exists in template
+    if "{PROBLEM}" in prompt_template:
+        return prompt_template.format(
+            PROBLEM=problem.strip(),
+            REFERENCE_SOLUTION=reference_solution.strip(),
+            CANDIDATE_SOLUTION=candidate_solution.strip()
+        )
+    else:
+        # Only format REFERENCE_SOLUTION and CANDIDATE_SOLUTION
+        return prompt_template.format(
+            REFERENCE_SOLUTION=reference_solution.strip(),
+            CANDIDATE_SOLUTION=candidate_solution.strip()
+        )
 
 
 def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
