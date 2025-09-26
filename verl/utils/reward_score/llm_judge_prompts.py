@@ -6,7 +6,6 @@ using LLM-as-a-judge. Templates are stored as simple string constants and can be
 accessed by name or used directly.
 """
 
-# Default prompt template - concise and focused
 DEFAULT_PROMPT_TEMPLATE = """
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
@@ -31,6 +30,69 @@ OUTPUT FORMAT (must follow exactly)
 Output ONLY one line:
 REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
+
+
+PROMPT_TEMPLATE_V0 = """
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
+
+INPUTS
+- Problem:
+{PROBLEM}
+
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+OUTPUT FORMAT (must follow exactly)
+Output ONLY one line:
+REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
+
+PROMPT_TEMPLATE_V0_1 = """TASK DESCRIPTION
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity.  Return a real value between 0-1 with 3 decimals.
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+
+OUTPUT FORMAT (must follow exactly)
+REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
+
+
+
+PROMPT_TEMPLATE_V1_1 = """TASK DESCRIPTION
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
+
+
+EVALUATION CRITERIA
+1. Mathematical correctness - Are candidate solution mathematically sound as the reference solution?
+2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
+3. Final answer - Do candidate solution arrive at the same conclusion as the reference solution?
+4. Overall clarity - Are the reasoning and solution steps correct, sonsistent, and logically sound as the reference solution?
+
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+OUTPUT FORMAT (must follow exactly)
+Output ONLY one line:
+REWARD: <real value between 0 and 1 with 3 decimals>
+""".strip()
+
+
 
 # Detailed prompt template - includes reasoning steps
 DETAILED_PROMPT_TEMPLATE = """
@@ -73,6 +135,10 @@ REWARD: <number between 0 and 1 with 3 decimals>
 PROMPT_TEMPLATES = {
     "default": DEFAULT_PROMPT_TEMPLATE,
     "detailed": DETAILED_PROMPT_TEMPLATE,
+    "v0": PROMPT_TEMPLATE_V0,
+    "v0_1": PROMPT_TEMPLATE_V0_1,
+    "v1": DEFAULT_PROMPT_TEMPLATE,
+    "v1_1": PROMPT_TEMPLATE_V1_1
 }
 
 
@@ -81,7 +147,7 @@ def get_prompt_template(template_name: str) -> str:
     Get a prompt template by name.
     
     Args:
-        template_name: Name of the template ("default", "detailed")
+        template_name: Name of the template ("default", "detailed", "v0")
         
     Returns:
         The prompt template string
