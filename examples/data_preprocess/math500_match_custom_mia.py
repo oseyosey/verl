@@ -53,18 +53,9 @@ import datasets
 from verl.utils.fs import copy, makedirs  # type: ignore
 
 try:
-    from .llm_judge_prompts import get_prompt_template, list_available_templates
+    from verl.utils.reward_score.llm_judge_prompts import get_prompt_template, list_available_templates
 except ImportError:
-    # Handle case when running as script directly - import from reward_score module
-    try:
-        from verl.utils.reward_score.llm_judge_prompts import get_prompt_template, list_available_templates
-    except ImportError:
-        # Final fallback to local file if module import fails
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(__file__))
-        from llm_judge_prompts import get_prompt_template, list_available_templates
-
+    print("Cannot import llm_judge_prompts form verl")
 
 def transform_example(
     example,

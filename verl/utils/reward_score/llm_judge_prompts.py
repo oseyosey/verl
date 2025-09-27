@@ -93,6 +93,52 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
 
+PROMPT_TEMPLATE_V1_2 = """TASK DESCRIPTION
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
+
+
+EVALUATION CRITERIA
+1. Mathematical correctness - Is the candidate solution mathematically sound as the reference solution?
+2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
+3. Final answer - Do candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
+4. Overall similarity -  Do the solutions exhibit high lexical/token/semantic overlap as the reference solution?
+
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+OUTPUT FORMAT (must follow exactly)
+Output ONLY one line:
+REWARD: <real value between 0 and 1 with 3 decimals>
+""".strip()
+
+PROMPT_TEMPLATE_V1_3 = """TASK DESCRIPTION
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
+
+
+EVALUATION CRITERIA
+1. Mathematical correctness - Is the candidate solution mathematically sound as the reference solution?
+2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
+3. Final answer - Do candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
+4. Overall similarity -  Do the solutions exhibit high lexical/token/semantic overlap as the reference solution?
+5. Length conformity — Is the candidate solution’s word count within ±25% of the reference solution’s word count?
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+OUTPUT FORMAT (must follow exactly)
+Output ONLY one line:
+REWARD: <real value between 0 and 1 with 3 decimals>
+""".strip()
+
 PROMPT_TEMPLATE_V2 = """TASK DESCRIPTION
 Rate two solutions to the same math problem (one reference, one candidate) for similarity. The final answer in each solution is enclosed in "\\boxed{{}}". Return a real-valued score between 0 and 1 with exactly 3 decimals.
 
@@ -113,6 +159,7 @@ INPUTS
 OUTPUT FORMAT (must follow exactly)
 REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
+
 
 PROMPT_TEMPLATE_V2_1 = """TASK DESCRIPTION
 Rate two solutions to the same math problem (one reference, one candidate) for similarity. The final answer in each solution is enclosed in "\\boxed{{}}". Return a real-valued score between 0 and 1 with exactly 3 decimals.
@@ -185,6 +232,8 @@ PROMPT_TEMPLATES = {
     "v0_1": PROMPT_TEMPLATE_V0_1,
     "v1": PROMPT_TEMPLATE_V1,
     "v1_1": PROMPT_TEMPLATE_V1_1,
+    "v1_2": PROMPT_TEMPLATE_V1_2,
+    "v1_3": PROMPT_TEMPLATE_V1_3,
     "v2": PROMPT_TEMPLATE_V2,
     "v2_1": PROMPT_TEMPLATE_V2_1
 }
