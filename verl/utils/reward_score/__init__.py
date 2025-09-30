@@ -13,6 +13,8 @@
 # limitations under the License.
 # from . import gsm8k, math, prime_math, prime_code
 
+import pdb
+
 from verl.utils.import_utils import deprecated
 
 def default_compute_score(

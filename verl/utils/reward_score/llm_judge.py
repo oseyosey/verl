@@ -92,17 +92,18 @@ REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
 
 
-def _extract_reward_score(response_text: str) -> Optional[float]:
+def _extract_reward_score(response_text: str, score_range: str = "0-1") -> Optional[float]:
     """
     Extract reward score from LLM response text.
     
-    Expected format: "REWARD: 0.XXX"
+    Expected format: "REWARD: X.XXX" where range depends on score_range parameter
     
     Args:
         response_text: Raw response from LLM
+        score_range: Expected score range, either "0-1" or "0-100"
         
     Returns:
-        Extracted score between 0 and 1, or None if extraction failed
+        Extracted score normalized to [0, 1] range, or None if extraction failed
     """
     if not response_text:
         return None
@@ -114,23 +115,57 @@ def _extract_reward_score(response_text: str) -> Optional[float]:
     if match:
         try:
             score = float(match.group(1))
-            # Clamp to [0, 1] range
-            return max(0.0, min(1.0, score))
+            
+            # Normalize based on expected range
+            if score_range == "0-100":
+                # For 0-100 scale, normalize to 0-1
+                normalized_score = score / 100.0
+                return max(0.0, min(1.0, normalized_score))
+            else:
+                # For 0-1 scale, clamp to [0, 1] range
+                return max(0.0, min(1.0, score))
         except ValueError:
             pass
     
-    # Fallback: look for any number between 0 and 1
-    pattern = r"\b(0\.\d{1,3}|1\.0{1,3}|0|1)\b"
-    matches = re.findall(pattern, response_text)
-    
-    if matches:
-        try:
-            score = float(matches[-1])  # Take the last match
-            return max(0.0, min(1.0, score))
-        except ValueError:
-            pass
+    # Fallback: look for any number
+    if score_range == "0-100":
+        # For 0-100 scale, look for numbers up to 100
+        pattern = r"\b(\d{1,3}(?:\.\d+)?)\b"
+        matches = re.findall(pattern, response_text)
+        if matches:
+            try:
+                score = float(matches[-1])  # Take the last match
+                normalized_score = score / 100.0
+                return max(0.0, min(1.0, normalized_score))
+            except ValueError:
+                pass
+    else:
+        # For 0-1 scale, look for numbers between 0 and 1
+        pattern = r"\b(0\.\d{1,3}|1\.0{1,3}|0|1)\b"
+        matches = re.findall(pattern, response_text)
+        if matches:
+            try:
+                score = float(matches[-1])  # Take the last match
+                return max(0.0, min(1.0, score))
+            except ValueError:
+                pass
     
     return None
+
+
+def _detect_score_range(prompt_template: str) -> str:
+    """
+    Detect the expected score range from the prompt template.
+    
+    Args:
+        prompt_template: The prompt template string
+        
+    Returns:
+        "0-100" if template expects 0-100 scale, "0-1" otherwise
+    """
+    if "between 0 and 100" in prompt_template or "0-100" in prompt_template:
+        return "0-100"
+    return "0-1"
 
 
 def _tokenize(text: str) -> List[str]:
@@ -525,7 +560,8 @@ def _single_llm_judge_score(
         return 0.0
     
     # Extract score
-    score = _extract_reward_score(response_text)
+    score_range = _detect_score_range(prompt_template)
+    score = _extract_reward_score(response_text, score_range)
     if score is None:
         logger.warning(f"Failed to extract score from LLM response: {response_text[:100]}...")
         return 0.0
@@ -703,6 +739,7 @@ def _compute_score_batch(
     # Build all (solution_idx, reference) pairs with filtering
     prompts = []
     prompt_mappings = []  # (solution_idx, reference_idx)
+    score_ranges = []  # Store score range for each prompt
     
     for sol_idx, (sol, gt, info) in enumerate(zip(solution_strs, ground_truths, extra_infos)):
         # Handle multiple references
@@ -716,6 +753,7 @@ def _compute_score_batch(
         
         prompt_template = info.get("prompt_template", DEFAULT_PROMPT_TEMPLATE)
         problem = info.get("problem", "")
+        score_range = _detect_score_range(prompt_template)
         
         # Create prompts for all references of this solution
         for ref_idx, ref in enumerate(refs):
@@ -723,10 +761,12 @@ def _compute_score_batch(
                 formatted_prompt = _format_prompt(prompt_template, problem, ref, str(sol))
                 prompts.append(formatted_prompt)
                 prompt_mappings.append((sol_idx, ref_idx))
+                score_ranges.append(score_range)
             except Exception as e:
                 logger.error(f"Error formatting prompt for solution {sol_idx}, ref {ref_idx}: {e}")
                 prompts.append("")  # Will result in None response
                 prompt_mappings.append((sol_idx, ref_idx))
+                score_ranges.append(score_range)
     
     # Call LLM batch API with all prompts at once
     responses = _call_llm_batch(
@@ -744,7 +784,8 @@ def _compute_score_batch(
             logger.warning(f"LLM call failed for solution {sol_idx}, ref {ref_idx}")
             score = 0.0
         else:
-            score = _extract_reward_score(response)
+            score_range = score_ranges[prompt_idx]
+            score = _extract_reward_score(response, score_range)
             if score is None:
                 logger.warning(f"Failed to extract score from response for sol {sol_idx}, ref {ref_idx}: {response[:100]}...")
                 score = 0.0
