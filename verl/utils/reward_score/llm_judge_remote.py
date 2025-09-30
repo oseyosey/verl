@@ -48,8 +48,6 @@ import re
 from typing import List, Optional, Dict, Any
 from functools import lru_cache
 
-import pdb
-
 # Try to import LLM judge client
 try:
     from ...utils_rl.llm_judge_client import LLMJudgeClient, get_default_client
@@ -78,7 +76,7 @@ DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_P = 0.8
 DEFAULT_MAX_NEW_TOKENS = 512
 DEFAULT_ENABLE_THINKING = False
-DEFAULT_BATCH_SIZE = 512  # Optimized for 8-GPU vLLM server
+DEFAULT_BATCH_SIZE = 128  # Optimized for 8-GPU vLLM server with batch_size_per_worker
 
 # Import prompt templates
 try:
@@ -143,17 +141,18 @@ def _tokenize(text: str) -> List[str]:
 # Removed lexical fallback - now returns 0.0 when server unavailable
 
 
-def _extract_reward_score(response_text: str) -> Optional[float]:
+def _extract_reward_score(response_text: str, score_range: str = "0-1") -> Optional[float]:
     """
     Extract reward score from LLM response text.
     
-    Expected format: "REWARD: 0.XXX"
+    Expected format: "REWARD: X.XXX" where range depends on score_range parameter
     
     Args:
         response_text: Raw response from LLM
+        score_range: Expected score range, either "0-1" or "0-100"
         
     Returns:
-        Extracted score between 0 and 1, or None if extraction failed
+        Extracted score normalized to [0, 1] range, or None if extraction failed
     """
     if not response_text:
         return None
@@ -165,23 +164,57 @@ def _extract_reward_score(response_text: str) -> Optional[float]:
     if match:
         try:
             score = float(match.group(1))
-            # Clamp to [0, 1] range
-            return max(0.0, min(1.0, score))
+            
+            # Normalize based on expected range
+            if score_range == "0-100":
+                # For 0-100 scale, normalize to 0-1
+                normalized_score = score / 100.0
+                return max(0.0, min(1.0, normalized_score))
+            else:
+                # For 0-1 scale, clamp to [0, 1] range
+                return max(0.0, min(1.0, score))
         except ValueError:
             pass
     
-    # Fallback: look for any number between 0 and 1
-    pattern = r"\b(0\.\d{1,3}|1\.0{1,3}|0|1)\b"
-    matches = re.findall(pattern, response_text)
-    
-    if matches:
-        try:
-            score = float(matches[-1])  # Take the last match
-            return max(0.0, min(1.0, score))
-        except ValueError:
-            pass
+    # Fallback: look for any number
+    if score_range == "0-100":
+        # For 0-100 scale, look for numbers up to 100
+        pattern = r"\b(\d{1,3}(?:\.\d+)?)\b"
+        matches = re.findall(pattern, response_text)
+        if matches:
+            try:
+                score = float(matches[-1])  # Take the last match
+                normalized_score = score / 100.0
+                return max(0.0, min(1.0, normalized_score))
+            except ValueError:
+                pass
+    else:
+        # For 0-1 scale, look for numbers between 0 and 1
+        pattern = r"\b(0\.\d{1,3}|1\.0{1,3}|0|1)\b"
+        matches = re.findall(pattern, response_text)
+        if matches:
+            try:
+                score = float(matches[-1])  # Take the last match
+                return max(0.0, min(1.0, score))
+            except ValueError:
+                pass
     
     return None
+
+
+def _detect_score_range(prompt_template: str) -> str:
+    """
+    Detect the expected score range from the prompt template.
+    
+    Args:
+        prompt_template: The prompt template string
+        
+    Returns:
+        "0-100" if template expects 0-100 scale, "0-1" otherwise
+    """
+    if "between 0 and 100" in prompt_template or "0-100" in prompt_template:
+        return "0-100"
+    return "0-1"
 
 
 def _format_prompt(
@@ -283,7 +316,8 @@ def _single_llm_judge_score(
             return None
         
         # Extract score
-        score = _extract_reward_score(responses[0])
+        score_range = _detect_score_range(prompt_template)
+        score = _extract_reward_score(responses[0], score_range)
         if score is None:
             logger.error(f"Failed to extract score from remote response: {responses[0][:100]}...")
             return None
@@ -347,9 +381,10 @@ def _batch_llm_judge_scores(
         # Extract scores
         scores = []
         failed_extractions = 0
+        score_range = _detect_score_range(prompt_template)
         for i, response in enumerate(all_responses):
             if response:
-                score = _extract_reward_score(response)
+                score = _extract_reward_score(response, score_range)
                 if score is not None:
                     scores.append(score)
                 else:
@@ -416,9 +451,10 @@ def _best_similarity(
         
         # Find best score
         best_score = 0.0
+        score_range = _detect_score_range(prompt_template)
         for response in responses:
             if response:
-                score = _extract_reward_score(response)
+                score = _extract_reward_score(response, score_range)
                 if score is not None:
                     best_score = max(best_score, score)
         
@@ -542,18 +578,15 @@ def compute_score(
                     problem = config.get("problem", "")
                 
                 # Find best reference for each solution
-                if len(gts_flat) > 5:
-                    # For many references, create pairs for batch processing
+                if len(gts_flat) > 0:
+                    # Create pairs for batch processing (always prefer batching over sequential)
                     for ref in gts_flat:
                         all_solutions.append(sol)
                         all_references.append(ref)
                         all_problems.append(problem)
                         pair_indices.append(sol_idx)
-                else:
-                    # For few references, we'll handle this separately
-                    pass
             
-            if len(gts_flat) > 5 and all_solutions:
+            if len(gts_flat) > 0 and all_solutions:
                 # Batch process all pairs
                 scores = _batch_llm_judge_scores(
                     all_solutions, all_references, all_problems, client,
@@ -588,7 +621,51 @@ def compute_score(
             
             return result_scores
         
-        # Filtered or fallback path
+        # Filtered path with batch optimization
+        if client is not None:
+            # Collect all solution-reference pairs after filtering
+            all_solutions = []
+            all_references = []
+            all_problems = []
+            pair_indices = []  # Track which solution each pair belongs to
+            
+            defaults = [None] * len(sols) if extra_infos is None else extra_infos
+            for sol_idx, (sol, gt, ei) in enumerate(zip(sols, ground_truths, defaults)):
+                refs = [gt] if isinstance(gt, str) else list(gt)
+                refs = _filter_refs(refs, ei)  # Apply filtering per sample
+                
+                # Extract per-sample problem
+                sample_problem = ""
+                if isinstance(ei, dict):
+                    sample_problem = ei.get("problem", config.get("problem", ""))
+                else:
+                    sample_problem = config.get("problem", "")
+                
+                # Add all solution-reference pairs to the batch
+                for ref in refs:
+                    all_solutions.append(sol)
+                    all_references.append(ref)
+                    all_problems.append(sample_problem)
+                    pair_indices.append(sol_idx)
+            
+            # Batch process all filtered pairs
+            if all_solutions:
+                scores = _batch_llm_judge_scores(
+                    all_solutions, all_references, all_problems, client,
+                    model_name, prompt_template, enable_thinking,
+                    temperature, top_p, max_new_tokens, batch_size
+                )
+                
+                if scores is not None:
+                    # Group scores by solution and take max
+                    result_scores = []
+                    for sol_idx in range(len(sols)):
+                        sol_scores = [scores[i] for i, pi in enumerate(pair_indices) if pi == sol_idx]
+                        best_score = max(sol_scores) if sol_scores else 0.0
+                        result_scores.append(best_score)
+                    return result_scores
+        
+        # Fallback to sequential processing if batch failed
         res: List[float] = []
         defaults = [None] * len(sols) if extra_infos is None else extra_infos
         for sol, gt, ei in zip(sols, ground_truths, defaults):

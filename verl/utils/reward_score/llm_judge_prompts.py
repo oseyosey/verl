@@ -6,7 +6,13 @@ using LLM-as-a-judge. Templates are stored as simple string constants and can be
 accessed by name or used directly.
 """
 
+# =============================================================================
+# PROMPT TEMPLATES - VERSION HISTORY
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# V0 - Basic similarity rating (includes problem statement)
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V0 = """
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
@@ -26,6 +32,9 @@ REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# V0.1 - Basic similarity rating (no problem statement)
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V0_1 = """TASK DESCRIPTION
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity.  Return a real value between 0-1 with 3 decimals.
 
@@ -42,6 +51,9 @@ REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# V1 - V0, enhanced with evaluation criteria (includes problem statement)
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V1 = """
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
@@ -68,7 +80,9 @@ REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
 
 
-
+# -----------------------------------------------------------------------------
+# V1.1 - Enhanced with evaluation criteria (no problem statement)
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V1_1 = """TASK DESCRIPTION
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
@@ -93,6 +107,9 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# V1.2 - Enhanced criteria with boxed answer focus
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V1_2 = """TASK DESCRIPTION
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
@@ -101,7 +118,8 @@ EVALUATION CRITERIA
 1. Mathematical correctness - Is the candidate solution mathematically sound as the reference solution?
 2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
 3. Final answer - Do candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
-4. Overall similarity -  Do the solutions exhibit high lexical/token/semantic overlap as the reference solution?
+4. Overall clarity - Are the reasoning and solution steps correct, sonsistent, and logically sound as the reference solution?
+5. Overall similarity - Do the solutions exhibit high lexical/token/semantic overlap as the reference solution?
 
 
 INPUTS
@@ -116,6 +134,10 @@ Output ONLY one line:
 REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
+
+# -----------------------------------------------------------------------------
+# V1.3 - Enhanced criteria with length conformity
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V1_3 = """TASK DESCRIPTION
 Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
@@ -139,6 +161,10 @@ Output ONLY one line:
 REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
+
+# -----------------------------------------------------------------------------
+# V2 - Comprehensive evaluation with surface & semantic resemblance
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V2 = """TASK DESCRIPTION
 Rate two solutions to the same math problem (one reference, one candidate) for similarity. The final answer in each solution is enclosed in "\\boxed{{}}". Return a real-valued score between 0 and 1 with exactly 3 decimals.
 
@@ -161,6 +187,9 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# V2.1 - Same as V2 but with explicit "Output ONLY one line" instruction
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V2_1 = """TASK DESCRIPTION
 Rate two solutions to the same math problem (one reference, one candidate) for similarity. The final answer in each solution is enclosed in "\\boxed{{}}". Return a real-valued score between 0 and 1 with exactly 3 decimals.
 
@@ -184,7 +213,545 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
 
-# Detailed prompt template - includes reasoning steps
+# -----------------------------------------------------------------------------
+# V3 - Scoring with hard disqualifiers and additive scoring
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V3 = """TASK
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,1] with 3 decimals.
+
+HARD DISQUALIFIER (apply BEFORE scoring; if true, output 0.000):
+A) The candidate merely restates or paraphrases the problem statement, or provides no substantive solution steps (i.e., not a solution).
+If A is true → REWARD: 0.000
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content. Ignore any text that reproduces the problem statement or generic headings/boilerplate (e.g., “Problem:”, “### Problem”, restated prompt).
+- Do not give credit for tokens/phrases that appear in the problem statement; similarity must come from solution reasoning/derivations/explanations and final answer.
+
+SCORING (apply ONLY if no disqualifier triggered)
+Compute an additive score ∈ [0, 1.0] using the five criteria below; each criterion is worth 0.20. Round the final result to 3 decimals.
+
+1) Mathematical correctness (0.20)
+   - Are the candidate’s steps mathematically valid and consistent with the GROUND TRUTH’s reasoning (beyond just the final answer)?
+
+2) Solution approach similarity (0.20)
+   - Does the candidate use comparable methods/transformations to the GROUND TRUTH (e.g., same identities, substitutions, case structure, combinatorial arguments)?
+
+3) Lexical/token overlap of solution content (0.20)
+   - Consider only solution text (exclude problem text/boilerplate). Higher score for close phrase/term/token overlap and similar ordering.
+
+4) Length similarity (0.20)
+   - Compare solution word counts (exclude problem text/boilerplate). Full credit if within ±15% of GROUND TRUTH; otherwise decrease proportionally with distance.
+
+5) Final answer match (0.20)
+   - If the candidate presents a clear final answer that exactly matches the GROUND TRUTH (e.g., same value in \\boxed{{}} when present): full credit (0.20).
+   - If a clear final answer is present but does NOT match: 0.00 for this criterion.
+   - If no clear final answer is presented: 0.00 for this criterion.
+
+FINAL OUTPUT FORMAT (must follow exactly; no extra words, no reasoning)
+REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V3.1 - Introduce Rubric for more specific scoring.
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V3_1 = """
+TASK
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,1] with 3 decimals.
+
+HARD DISQUALIFIER (apply BEFORE scoring; if true, output 0.000):
+A) The candidate merely restates or paraphrases the problem statement, or provides no substantive solution steps (i.e., not a solution).
+If A is true → REWARD: 0.000
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Do not give credit for tokens/phrases that appear in the PROBLEM; similarity must come from solution reasoning/derivations/explanations and final answer.
+
+SCORING (use ALL five criteria; each contributes 0.20. Round final to 3 decimals.)
+1) Mathematical correctness (0.20)
+   0.00: no valid steps / nonsense
+   0.05: some valid manipulations but major errors dominate
+   0.10: partial correctness (roughly half steps valid)
+   0.15: largely correct with minor slips
+   0.20: fully correct and consistent
+
+2) Solution approach similarity (0.20)
+   0.00: different method entirely / irrelevant steps
+   0.05: shares a small sub-step but overall different
+   0.10: some overlap in method (e.g., same identity used once)
+   0.15: broadly similar pipeline (same key transformations/case structure)
+   0.20: closely mirrors the ground-truth approach
+
+3) Lexical/token overlap of solution content (exclude PROBLEM) (0.20)
+   Guide by qualitative token/phrase overlap and ordering (of solution text only):
+   0.00: negligible (<10%) or mostly copied from PROBLEM
+   0.05: low (~10–30%)
+   0.10: moderate (~30–60%)
+   0.15: high (~60–80%)
+   0.20: very high (≈80%+), yet not copied from PROBLEM
+
+4) Length similarity (solution text only) (0.20)
+   Compare word counts after excluding PROBLEM/boilerplate:
+   0.20: within ±15%
+   0.15: within ±25%
+   0.10: within ±40%
+   0.05: within ±60%
+   0.00: farther than ±60%
+
+5) Final answer match (0.20)
+   0.20: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   0.05: clear final answer present but does NOT match
+   0.00: no clear final answer
+
+FINAL OUTPUT FORMAT (must follow exactly; no extra words, no reasoning)
+REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+- PROBLEM:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V3.2 - Modified HARD DISQUALIFIER to avoid false HARD DISQUALIFIER.
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V3_2 = """
+TASK
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,1] with 3 decimals.
+
+HARD DISQUALIFIER (apply BEFORE scoring; if true, output 0.000)
+A) The candidate provides no substantive solution steps (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Treat code blocks as valid reasoning for correctness/approach.
+
+SCORING (apply ONLY if no disqualifier triggered)
+Compute an additive score ∈ [0, 1.0] using the five criteria below; each criterion is worth 0.20. Round the final result to 3 decimals.
+
+1) Mathematical correctness (0.20)
+   - Are the candidate’s steps mathematically valid and consistent with the GROUND TRUTH’s reasoning (beyond just the final answer)?
+
+2) Solution approach similarity (0.20)
+   - Does the candidate use comparable methods/transformations to the GROUND TRUTH (e.g., same identities, substitutions, case structure, combinatorial arguments)?
+
+3) Lexical/token overlap of solution content (0.20)
+   - Consider only solution text (exclude problem text/boilerplate). Higher score for close phrase/term/token overlap and similar ordering.
+
+4) Length similarity (0.20)
+   - Compare solution word counts (exclude problem text/boilerplate). Full credit if within ±15% of GROUND TRUTH; otherwise decrease proportionally with distance.
+
+5) Final answer match (0.20)
+   - If the candidate presents a clear final answer that exactly matches the GROUND TRUTH (e.g., same value in \\boxed{{}} when present): full credit (0.20).
+   - If a clear final answer is present but does NOT match: 0.00 for this criterion.
+   - If no clear final answer is presented: 0.00 for this criterion.
+
+FINAL OUTPUT FORMAT (must follow exactly; no extra words, no reasoning)
+REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V3.3 - Introduce Rubric for more specific scoring.
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V3_3 = """
+TASK
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,1] with 3 decimals.
+
+HARD DISQUALIFIER (apply BEFORE scoring; if true, output 0.000)
+A) The candidate provides no substantive solution steps (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Treat code blocks as valid reasoning for correctness/approach.
+
+SCORING (use ALL four criteria; each contributes 0.25. Choose the band that best fits. Round final to 3 decimals.)
+
+1) Solution approach similarity (0.25)
+   0.00: different method entirely / irrelevant steps
+   0.05: small overlap
+   0.10: some overlapping techniques
+   0.15: broadly similar pipeline (same key transformations/case structure)
+   0.25: closely mirrors the ground-truth approach
+   (Programmatic computation that mirrors the same math is acceptable.)
+
+2) Lexical/token overlap of solution content (0.25)
+   Judge by phrase/term/token overlap and ordering of the **solution text only** (discount repetition):
+   0.00: negligible overlap or mostly copied from PROBLEM
+   0.05: low (~10–25%)
+   0.10: moderate (~25–50%)
+   0.15: high (~50–75%)
+   0.25: very high (≈75%+)
+
+3) Length similarity (solution text only) (0.25)
+   Compare word counts after excluding PROBLEM/boilerplate; discount repetition.
+   0.25: within ±15%
+   0.15: within ±25%
+   0.10: within ±40%
+   0.05: within ±60%
+   0.00: farther than ±60%
+4) Final answer match (0.25)
+   0.25: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   0.10: numerically equivalent but different formatting (e.g., 2/4 vs 1/2); or obviously minor format difference
+   0.05: clear final answer present but does NOT match
+   0.00: no clear final answer
+
+GLOBAL CAPS (apply AFTER summing the four criteria)
+- If you assigned **0.00 or 0.05** to criterion (2) Lexical/Token Overlap, cap the TOTAL at **0.50**.
+- If you assigned **0.00 or 0.05** to criterion (4) Length Similarity, cap the TOTAL at **0.50**.
+(If both apply, use the lower cap.)
+
+
+FINAL OUTPUT FORMAT (must follow exactly; no extra words, no reasoning)
+REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+- PROBLEM:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V3.4 - Enhanced with additional output format. Added sub-score output.
+#      - Changed the scoring from [0,1] to [0,100].
+#      - Added additional description in the instruction header (you are an expert mathematician)
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V3_4 = """
+TASK
+You are an strict and expert mathematician evaluating the similarity between two solutions to a math problem.
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,100]
+
+DISQUALIFIER (apply BEFORE scoring)
+A) Candidate solution provides no solution steps or no answer (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+If candidate solution output the answer correctly, it should not trigger this disqualifier. If requirements A) is met, return 0.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Treat code blocks as valid reasoning for correctness/approach.
+
+SCORING (use ALL four criteria; each contributes at maximum 25 points. Choose carefully the band that best fits.)
+
+1) Solution approach similarity (25)
+   0: different method entirely / irrelevant steps
+   5: small overlap
+   10: some overlapping techniques
+   15: broadly similar pipeline (same key transformations/case structure)
+   25: closely mirrors the ground-truth approach
+   (Programmatic computation that mirrors the same math is acceptable.)
+
+2) Lexical/token overlap of solution content (25)
+   Judge by phrase/term/token overlap (discount repetition):
+   25: very high overlap (≈75%+)
+   15: high overlap  (~50–75%)
+   10: moderate overlap (~25–50%)
+   5: low overlap (~10–25%)
+   0: negligible overlap
+
+
+3) Length similarity (solution text only) (25)
+   Compare word counts after excluding PROBLEM/boilerplate; discount repetition.
+   25: within ±15%
+   15: within ±25%
+   10: within ±40%
+   5: within ±60%
+   0: farther than ±60%
+
+4) Final answer match (25)
+   25: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   10: numerically equivalent but different formatting (e.g., 2/4 vs 1/2); or obviously minor format difference
+   5: clear final answer present but does NOT match
+   0: no clear final answer
+
+GLOBAL CAPS (apply AFTER summing the four criteria).
+- If you assigned **0, 5, or 10** to criterion (1), (2), or (3), the total reward will be capped at 50. The maximum reward you can return is 50.
+
+
+FINAL OUTPUT FORMAT (must follow exactly.)
+APPROACH: <one of 0|5|10|15|25>
+LEXICAL: <one of 0|5|10|15|25>
+LENGTH:  <one of 0|5|10|15|25>
+ANSWER:  <one of 0|5|10|25>
+CAP APPLIED: <yes|no>
+REWARD: <number between 0 and 100>
+
+INPUTS
+- PROBLEM:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+# -----------------------------------------------------------------------------
+# V3.5 - Removed sub-score output for inference efficiency.
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V3_5 = """
+TASK
+You are an strict and expert mathematician evaluating the similarity between two solutions to a math problem.
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,100]
+
+DISQUALIFIER (apply BEFORE scoring)
+A) Candidate solution provides no solution steps or no answer (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+If candidate solution output the answer correctly, it should not trigger this disqualifier. If requirements A) is met, return 0.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Treat code blocks as valid reasoning for correctness/approach.
+
+SCORING (use ALL four criteria; each contributes at maximum 25 points. Choose carefully the band that best fits.)
+
+1) Solution approach similarity (25)
+   0: different method entirely / irrelevant steps
+   5: small overlap
+   10: some overlapping techniques
+   15: broadly similar pipeline (same key transformations/case structure)
+   25: closely mirrors the ground-truth approach
+   (Programmatic computation that mirrors the same math is acceptable.)
+
+2) Lexical/token overlap of solution content (25)
+   Judge by phrase/term/token overlap (discount repetition):
+   25: very high overlap (≈75%+)
+   15: high overlap  (~50–75%)
+   10: moderate overlap (~25–50%)
+   5: low overlap (~10–25%)
+   0: negligible overlap
+
+
+3) Length similarity (solution text only) (25)
+   Compare word counts after excluding PROBLEM/boilerplate; discount repetition.
+   25: within ±15%
+   15: within ±25%
+   10: within ±40%
+   5: within ±60%
+   0: farther than ±60%
+
+4) Final answer match (25)
+   25: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   10: numerically equivalent but different formatting (e.g., 2/4 vs 1/2); or obviously minor format difference
+   5: clear final answer present but does NOT match
+   0: no clear final answer
+
+GLOBAL CAPS (apply AFTER summing the four criteria).
+- If you assigned **0, 5, or 10** to criterion (1), (2), or (3), the total reward will be capped at 50. The maximum reward you can return is 50.
+
+
+FINAL OUTPUT FORMAT (must follow exactly.)
+REWARD: <number between 0 and 100>
+
+INPUTS
+- PROBLEM:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+# -----------------------------------------------------------------------------
+# V3.6 - Removed {PROBLEM} input for further inference efficiency.
+# -----------------------------------------------------------------------------
+
+PROMPT_TEMPLATE_V3_6 = """
+TASK
+You are an strict and expert mathematician evaluating the similarity between two solutions to a math problem.
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,100]
+
+DISQUALIFIER (apply BEFORE scoring)
+A) Candidate solution provides no solution steps or no answer (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+If candidate solution output the answer correctly, it should not trigger this disqualifier. If requirements A) is met, return 0.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Treat code blocks as valid reasoning for correctness/approach.
+
+SCORING (use ALL four criteria; each contributes at maximum 25 points. Choose carefully the band that best fits.)
+
+1) Solution approach similarity (25)
+   0: different method entirely / irrelevant steps
+   5: small overlap
+   10: some overlapping techniques
+   15: broadly similar pipeline (same key transformations/case structure)
+   25: closely mirrors the ground-truth approach
+   (Programmatic computation that mirrors the same math is acceptable.)
+
+2) Lexical/token overlap of solution content (25)
+   Judge by phrase/term/token overlap (discount repetition):
+   25: very high overlap (≈75%+)
+   15: high overlap  (~50–75%)
+   10: moderate overlap (~25–50%)
+   5: low overlap (~10–25%)
+   0: negligible overlap
+
+
+3) Length similarity (solution text only) (25)
+   Compare word counts after excluding PROBLEM/boilerplate; discount repetition.
+   25: within ±15%
+   15: within ±25%
+   10: within ±40%
+   5: within ±60%
+   0: farther than ±60%
+
+4) Final answer match (25)
+   25: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   10: numerically equivalent but different formatting (e.g., 2/4 vs 1/2); or obviously minor format difference
+   5: clear final answer present but does NOT match
+   0: no clear final answer
+
+GLOBAL CAPS (apply AFTER summing the four criteria).
+- If you assigned **0, 5, or 10** to criterion (1), (2), or (3), the total reward will be capped at 50. The maximum reward you can return is 50.
+
+
+FINAL OUTPUT FORMAT (must follow exactly.)
+REWARD: <number between 0 and 100>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+PROMPT_TEMPLATE_V3_7 = """
+TASK
+You are an strict and expert mathematician evaluating the similarity between two solutions to a math problem.
+Rate the similarity between two math problem solutions (one GROUND TRUTH, one CANDIDATE). Return a single numeric score in [0,100]
+
+DISQUALIFIER (apply BEFORE scoring)
+A) Candidate solution provides no solution steps or no answer (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+If candidate solution output the answer correctly, it should not trigger this disqualifier. If requirements A) is met, return 0.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content (exclude PROBLEM text and generic headings/boilerplate like “Problem:”, “### Problem”).
+- Treat code blocks as valid reasoning for correctness/approach.
+
+SCORING (use ALL five criteria; each contributes at maximum 20 points. Choose carefully the band that best fits.)
+
+1) Solution approach similarity (20)
+   0: different method entirely / irrelevant steps
+   5: small overlap
+   10: some overlapping techniques
+   15: broadly similar pipeline (same key transformations/case structure)
+   20: closely mirrors the ground-truth approach
+   (Programmatic computation that mirrors the same math is acceptable.)
+
+2) Lexical/token overlap of solution content (20)
+   Judge by phrase/term/token overlap (discount repetition):
+   20: very high overlap (≈75%+)
+   15: high overlap  (~50–75%)
+   10: moderate overlap (~25–50%)
+   5: low overlap (~10–25%)
+   0: negligible overlap
+
+3) Length similarity (solution text only) (20)
+   Compare word counts after excluding PROBLEM/boilerplate; discount repetition.
+   20: within ±15%
+   15: within ±25%
+   10: within ±40%
+   5: within ±60%
+   0: farther than ±60%
+
+4) Final answer match (20)
+   20: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   10: numerically equivalent but different formatting (e.g., 2/4 vs 1/2); or obviously minor format difference
+   5: clear final answer present but does NOT match
+   0: no clear final answer
+   
+5) Overall mathematical soundness (20)
+   Judge internal correctness and logical consistency of the solution steps (solution text only).
+   20: Fully correct and consistent; valid transformations, no contradictions/gaps.
+   15: Mostly correct; minor slips/omissions that don’t affect the argument.
+   10: Mixed; one–two substantive issues or gaps, but some correct progress.
+   5: Largely incorrect/weak; multiple invalid steps, misused identities, contradictions.
+   0: No valid reasoning; restatement/nonsense/irrelevant steps.
+
+
+GLOBAL CAPS (apply AFTER summing the four criteria).
+- If you assigned **0, 5, or 10** to criterion (1), (2), or (3), the total reward will be capped at 50. The maximum reward you can return is 50.
+- If final answer doens't match, the maximum reward will be capped at 40. The maximum reward you can return is 40.
+- If final answer doesn't match and criterion (5) is low score (betwen 0 and 10), the maximum reward will be capped at 0. The maximum reward you can return is 0.
+
+
+FINAL OUTPUT FORMAT (must follow exactly.)
+REWARD: <number between 0 and 100>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+
+# =============================================================================
+# SPECIALIZED TEMPLATES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# DETAILED - Includes reasoning steps and detailed evaluation
+# -----------------------------------------------------------------------------
 DETAILED_PROMPT_TEMPLATE = """
 You are an expert mathematics teacher evaluating the similarity between two solutions to a math problem. You need to rate how similar the candidate solution is to the reference solution.
 
@@ -222,9 +789,13 @@ REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
 
 
+# =============================================================================
+# TEMPLATE REGISTRY AND UTILITY FUNCTIONS
+# =============================================================================
 
-
-# Template name mapping
+# -----------------------------------------------------------------------------
+# Template name mapping - All available prompt templates
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATES = {
     "default": PROMPT_TEMPLATE_V1,
     "detailed": DETAILED_PROMPT_TEMPLATE,
@@ -235,9 +806,21 @@ PROMPT_TEMPLATES = {
     "v1_2": PROMPT_TEMPLATE_V1_2,
     "v1_3": PROMPT_TEMPLATE_V1_3,
     "v2": PROMPT_TEMPLATE_V2,
-    "v2_1": PROMPT_TEMPLATE_V2_1
+    "v2_1": PROMPT_TEMPLATE_V2_1,
+    "v3": PROMPT_TEMPLATE_V3,
+    "v3_1": PROMPT_TEMPLATE_V3_1,
+    "v3_2": PROMPT_TEMPLATE_V3_2,
+    "v3_3": PROMPT_TEMPLATE_V3_3,
+    "v3_4": PROMPT_TEMPLATE_V3_4,
+    "v3_5": PROMPT_TEMPLATE_V3_5,
+    "v3_6": PROMPT_TEMPLATE_V3_6,
+    "v3_7": PROMPT_TEMPLATE_V3_7,
 }
 
+
+# -----------------------------------------------------------------------------
+# Utility Functions
+# -----------------------------------------------------------------------------
 
 def get_prompt_template(template_name: str) -> str:
     """
@@ -270,3 +853,20 @@ def get_default_template() -> str:
 def list_available_templates() -> list:
     """List all available template names."""
     return list(PROMPT_TEMPLATES.keys())
+
+
+# =============================================================================
+# TEMPLATE EVOLUTION SUMMARY
+# =============================================================================
+# V0–V0.1: Basic similarity scoring (with/without problem statement)
+# V1–V1.3: Add evaluation criteria; focus on boxed answers; length conformity
+# V2–V2.1: Comprehensive criteria; add explicit one-line output instruction
+# V3: Add hard disqualifier and additive 5-criteria rubric in [0,1]
+# V3.1: Introduce banded rubric for each criterion; include PROBLEM input
+# V3.2: Refine disqualifier to reduce false triggers; accept brief restatement/code
+# V3.3: Switch to four-criterion banded rubric with global caps; include PROBLEM
+# V3.4: Change scale to [0,100]; add sub-scores and cap reporting; expert tone
+# V3.5: Keep [0,100] but remove sub-score outputs for efficiency
+# V3.6: Same as V3.5 but drop PROBLEM input for further efficiency
+# DETAILED: Reason-through evaluation first; then output [0,1] score
+# =============================================================================

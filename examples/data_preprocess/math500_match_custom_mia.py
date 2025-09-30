@@ -1317,6 +1317,7 @@ def main():
     if args.mia:
         members_path = os.path.join(output_dir, f"{args.output_name}_members.jsonl")
         nonmembers_path = os.path.join(output_dir, f"{args.output_name}_nonmembers.jsonl")
+        indices_path = os.path.join(output_dir, f"{args.output_name}_indices.json")
 
         print(f"\n=== Generating MIA JSONL files ===")
         
@@ -1368,9 +1369,48 @@ def main():
         _write_jsonl(members_path, members_rows)
         _write_jsonl(nonmembers_path, nonmembers_rows)
         
+        # Save member and non-member indices for verification
+        index_info = {
+            "member_indices": final_member_indices,  # Original indices from full dataset
+            "member_seed": args.subset_seed,
+            "member_size": len(final_member_indices),
+            "nonmember_method": args.mia_nonmember_method,
+            "dataset_info": {
+                "dataset_path": args.dataset_path,
+                "dataset_split": args.dataset_split,
+                "total_dataset_size": len(ds_full)
+            }
+        }
+        
+        # Add non-member specific info
+        if args.mia_nonmember_method == "unused_examples":
+            # Get non-member indices (unused examples)
+            nonmember_indices = [ex.get("original_idx") for ex in non_member_examples if "original_idx" in ex]
+            nonmember_indices = [idx for idx in nonmember_indices if idx is not None]
+            nonmember_indices.sort()
+            index_info["nonmember_indices"] = nonmember_indices
+            index_info["nonmember_size"] = len(nonmember_indices)
+        elif args.mia_nonmember_method in ["random_pairing", "perturbed_solution"]:
+            # For these methods, store the problem and solution indices
+            problem_indices = [ex.get("original_problem_idx") for ex in non_member_examples if "original_problem_idx" in ex]
+            solution_indices = [ex.get("original_solution_idx") for ex in non_member_examples if "original_solution_idx" in ex]
+            index_info["nonmember_problem_indices"] = problem_indices
+            index_info["nonmember_solution_indices"] = solution_indices
+            index_info["nonmember_size"] = len(non_member_examples)
+        
+        with open(indices_path, "w") as f:
+            json.dump(index_info, f, indent=2)
+        
         print(f"Wrote MIA JSONL files:")
         print(f"  Members ({len(members_rows)} examples): {members_path}")
         print(f"  Non-members ({len(nonmembers_rows)} examples): {nonmembers_path}")
+        print(f"  Indices ({args.mia_nonmember_method} method): {indices_path}")
+        
+        # Print index info
+        print(f"\n=== MIA Index Information ===")
+        print(f"Member indices: {final_member_indices[:10]}{'...' if len(final_member_indices) > 10 else ''}")
+        if args.mia_nonmember_method == "unused_examples" and "nonmember_indices" in index_info:
+            print(f"Non-member indices: {index_info['nonmember_indices'][:10]}{'...' if len(index_info['nonmember_indices']) > 10 else ''}")
         
         # Verification
         if args.verbose:
@@ -1384,6 +1424,16 @@ def main():
                 sample_nonmember = nonmembers_rows[0]
                 print(f"Sample non-member problem: {sample_nonmember['problem'][:80]}...")
                 print(f"Non-member method: {args.mia_nonmember_method}")
+            
+            # Check for overlap (should be none for unused_examples method)
+            if args.mia_nonmember_method == "unused_examples" and "nonmember_indices" in index_info:
+                member_set = set(final_member_indices)
+                nonmember_set = set(index_info["nonmember_indices"])
+                overlap = member_set.intersection(nonmember_set)
+                if overlap:
+                    print(f"❌ ERROR: Found {len(overlap)} overlapping indices: {list(overlap)[:5]}...")
+                else:
+                    print(f"✅ VERIFIED: No overlap between member and non-member indices")
 
 
 if __name__ == "__main__":
