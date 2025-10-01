@@ -745,6 +745,133 @@ INPUTS
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# V4 - Data contamination detection explicitly
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V4 = """TASK
+You are an strict and math expert. Your job is to detect data contamination given two problem solution. Give a contamination rating between two math solutions (GROUND TRUTH vs CANDIDATE). Return a single numeric score in [0,100] (integer or with 1–3 decimals). 
+
+NOTE
+Focus on whether the CANDIDATE mirrors the GROUND TRUTH’s approach/reasoning/phrasing/length/answer. 
+Solution correctness is only part of the criteria.
+
+
+DISQUALIFIER (apply BEFORE scoring)
+A) Candidate solution provides no solution steps or no answer (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+
+If candidate solution output the answer correctly, it should not trigger this disqualifier. If requirements A) is met, return 0.
+
+SCOPE
+- Compare SOLUTION content only. Ignore PROBLEM text and boilerplate (“Problem:”, “### Problem”, restated prompt).
+- Discount repetitive padding. Do not award overlap for repeated spans.
+
+
+1) Approach alignment (mirror of GT key steps/order):
+
+2) Lexical/phrase/token overlap:
+
+3) Length proximity:
+
+4) Final answer exact match:
+
+GLOBAL CAPS (apply AFTER summing)
+- If Approach shows little similarity, the maximum reward will be capped at 30. The maximum reward you can return is 30.
+- If Lexical shows little overlap, the maximum reward will be capped at 30. The maximum reward you can return is 30.
+- If Length is not within 50\% of the GROUND TRUTH, the maximum reward will be capped at 50. The maximum reward you can return is 50.
+
+
+FINAL OUTPUT (no extra words)
+APPROACH: <score>
+LEXICAL: <score>
+LENGTH: <score>
+ANSWER: <score>
+CAP APPLIED: <yes|no>
+REWARD: <number between 0 and 100>
+
+INPUTS
+- Problem:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+PROMPT_TEMPLATE_V4_1 = """TASK
+You are an strict and math expert. Your job is to detect data contamination given two problem solution. Give a contamination rating between two math solutions (GROUND TRUTH vs CANDIDATE). Return a final numeric score in [0,1] (number between 0 and 1 with 3 decimals). 
+
+NOTE
+Focus on whether the CANDIDATE mirrors the GROUND TRUTH’s approach/reasoning/phrasing/length/answer. 
+Solution correctness is only part of the criteria.
+
+DISQUALIFIER (apply BEFORE scoring)
+A) Candidate solution provides no solution steps or no answer (i.e., only repeats the PROBLEM or only states an answer with no computation/derivation).
+Notes:
+- A brief restatement of the PROBLEM to set context is acceptable and should NOT trigger this disqualifier.
+- Short code snippets that compute the result (e.g., using a modulus or arithmetic) count as valid solution steps.
+If candidate solution output the answer correctly, it should not trigger this disqualifier. If requirements A) is met, return 0.
+
+SCOPE
+- Compare SOLUTION content only. Ignore PROBLEM text and boilerplate (“Problem:”, “### Problem”, restated prompt).
+- Discount repetitive padding. Do not award overlap for repeated spans.
+
+AUXILIARY METRICS (you MUST use these to anchor scoring for LEXICAL and LENGTH)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # fraction in [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # fraction in [0,1] (normalized LCS)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # candidate_length / ground_truth_length (solution text only)
+
+
+
+1) Approach alignment (mirror of GT key steps/order):
+   0: different method entirely / irrelevant steps
+   0.25: small overlap
+   0.50: some overlapping techniques
+   0.75: broadly similar pipeline (same key transformations/case structure)
+   1.00: closely mirrors the ground-truth approach
+   (Programmatic computation that mirrors the same math is acceptable.)
+
+2) Lexical/phrase/token overlap:
+   (Use the best of LEXICAL_TOKEN_OVERLAP and LEXICAL_LCS_RATIO as the lexical score)
+
+3) Length proximity:
+   (Use LENGTH_RATIO as length proximity score)
+
+4) Final answer exact match:
+   1.00: clear final answer exactly matches the ground truth (e.g., same value in \\boxed{{}} when present)
+   0.50: numerically equivalent but different formatting (e.g., 2/4 vs 1/2); or obviously minor format difference
+   0.25: clear final answer present but does NOT match
+   0.00: no clear final answer
+
+GLOBAL CAPS (apply AFTER summing)
+- If Approach shows little similarity, the maximum reward will be capped at 30. The maximum reward you can return is 30.
+- If Lexical shows little overlap (e.g., max lexical metric < 0.25), the maximum reward will be capped at 30. The maximum reward you can return is 30.
+- If Length is not within 50% of the GROUND TRUTH (i.e., LENGTH_RATIO < 0.5 or > 1.5), the maximum reward will be capped at 50. The maximum reward you can return is 50.
+
+FINAL OUTPUT (no extra words)
+APPROACH: <score>
+LEXICAL: <score>
+LENGTH: <score>
+ANSWER: <score>
+CAP APPLIED: <yes|no>
+REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+- Problem:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+
 # =============================================================================
 # SPECIALIZED TEMPLATES
 # =============================================================================
@@ -815,6 +942,8 @@ PROMPT_TEMPLATES = {
     "v3_5": PROMPT_TEMPLATE_V3_5,
     "v3_6": PROMPT_TEMPLATE_V3_6,
     "v3_7": PROMPT_TEMPLATE_V3_7,
+    "v4": PROMPT_TEMPLATE_V4,
+    "v4_1": PROMPT_TEMPLATE_V4_1,
 }
 
 
