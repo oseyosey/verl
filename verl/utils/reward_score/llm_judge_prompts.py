@@ -10,6 +10,52 @@ accessed by name or used directly.
 # PROMPT TEMPLATES - VERSION HISTORY
 # =============================================================================
 
+
+# =============================================================================
+# SPECIALIZED TEMPLATES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# DETAILED - Includes reasoning steps and detailed evaluation
+# -----------------------------------------------------------------------------
+DETAILED_PROMPT_TEMPLATE = """
+You are an expert mathematics teacher evaluating the similarity between two solutions to a math problem. You need to rate how similar the candidate solution is to the reference solution.
+
+EVALUATION CRITERIA:
+1. Mathematical correctness - Are both solutions mathematically sound?
+2. Solution approach - Do they use similar methods or reasoning?
+3. Final answer - Do they arrive at the same conclusion?
+4. Presentation clarity - Are the explanations similarly structured?
+
+INPUTS
+- Problem:
+{PROBLEM}
+
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+INSTRUCTIONS:
+1. First, analyze the mathematical correctness of both solutions
+2. Compare the approaches and reasoning used
+3. Evaluate how well the candidate matches the reference
+4. Assign a similarity score from 0 to 1 where:
+   - 0.0-0.3: Very different (wrong answer or completely different approach)
+   - 0.4-0.6: Somewhat similar (some overlap but significant differences)
+   - 0.7-0.8: Quite similar (similar approach and correct answer)
+   - 0.9-1.0: Very similar (nearly identical reasoning and presentation)
+
+Think through your evaluation step by step, then provide your final score.
+
+OUTPUT FORMAT (must follow exactly)
+After your reasoning, output ONLY one line:
+REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
+
+
 # -----------------------------------------------------------------------------
 # V0 - Basic similarity rating (includes problem statement)
 # -----------------------------------------------------------------------------
@@ -158,6 +204,74 @@ INPUTS
 
 OUTPUT FORMAT (must follow exactly)
 Output ONLY one line:
+REWARD: <real value between 0 and 1 with 3 decimals>
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V1.4 - Enhanced criteria with grounding on lexical metrics
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V1_4 = """Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
+
+EVALUATION CRITERIA
+1. Mathematical correctness - Are the candidate solution’s steps mathematically sound as the reference solution?
+2. Solution approach - Do the candidate solution use similar methods or reasoning as the reference solution?
+3. Final answer - Does the candidate solution arrive at the same conclusion as the reference solution?
+4. Overall clarity - Are the reasoning and solution steps correct, consistent, and logically sound as the reference solution?
+5. Lexical overlap - Anchor this score to the AUXILIARY METRICS (use max(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO) as the primary score).
+6. Length proximity - Anchor this score to the AUXILIARY METRICS (use LENGTH_RATIO as the primary score).
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+AUXILIARY METRICS (for criteria 5–6; solution text only)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}    # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}        # [0,1] (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}             # |cand_tokens| / |GT_tokens|
+
+OUTPUT FORMAT (must follow exactly)
+Output ONLY one line:
+REWARD: <real value between 0 and 1 with 3 decimals>
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V1.5 - Enhanced criteria with grounding on lexical metrics with subscore.
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V1_5 = """Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Evaluate the similarity of the candidate solution to the reference solution on the following criteria. 
+Output sub-scores for each criterion as a real value between 0-1 with 3 decimals. Finally, output the overall reward as a real value between 0-1 with 3 decimals.
+
+EVALUATION CRITERIA
+1. Mathematical correctness - Are the candidate solution’s steps mathematically sound as the reference solution?
+2. Solution approach - Do the candidate solution use similar methods or reasoning as the reference solution?
+3. Final answer - Does the candidate solution arrive at the same conclusion as the reference solution?
+4. Overall clarity - Are the reasoning and solution steps correct, consistent, and logically sound as the reference solution?
+5. Lexical overlap - Anchor this score to the AUXILIARY METRICS (use max(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO) as the primary score).
+6. Length proximity - Anchor this score to the AUXILIARY METRICS (use LENGTH_RATIO as the primary score).
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+AUXILIARY METRICS (for criteria 5–6; solution text only)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}    # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}        # [0,1] (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}             # |cand_tokens| / |GT_tokens|
+
+OUTPUT FORMAT (must follow exactly)
+MATHEMATICAL_CORRECTNESS: <real value between 0 and 1 with 3 decimals>
+SOLUTION_APPROACH: <real value between 0 and 1 with 3 decimals>
+FINAL_ANSWER: <real value between 0 and 1 with 3 decimals>
+OVERALL_CLARITY: <real value between 0 and 1 with 3 decimals>
+LEXICAL_OVERLAP: <real value between 0 and 1 with 3 decimals>
+LENGTH_PROXIMITY: <real value between 0 and 1 with 3 decimals>
 REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
 
@@ -802,6 +916,8 @@ INPUTS
 {CANDIDATE_SOLUTION}
 """.strip()
 
+
+
 PROMPT_TEMPLATE_V4_1 = """TASK
 You are an strict and math expert. Your job is to detect data contamination given two problem solution. Give a contamination rating between two math solutions (GROUND TRUTH vs CANDIDATE). Return a final numeric score in [0,1] (number between 0 and 1 with 3 decimals). 
 
@@ -826,13 +942,12 @@ AUXILIARY METRICS (you MUST use these to anchor scoring for LEXICAL and LENGTH)
 - LENGTH_RATIO:          {LENGTH_RATIO}            # candidate_length / ground_truth_length (solution text only)
 
 
-
 1) Approach alignment (mirror of GT key steps/order):
-   0: different method entirely / irrelevant steps
-   0.25: small overlap
-   0.50: some overlapping techniques
-   0.75: broadly similar pipeline (same key transformations/case structure)
    1.00: closely mirrors the ground-truth approach
+   0.75: broadly similar pipeline (same key transformations/case structure)
+   0.50: some overlapping techniques
+   0.25: small overlap
+   0: different method entirely / irrelevant steps
    (Programmatic computation that mirrors the same math is acceptable.)
 
 2) Lexical/phrase/token overlap:
@@ -873,50 +988,6 @@ INPUTS
 
 
 # =============================================================================
-# SPECIALIZED TEMPLATES
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# DETAILED - Includes reasoning steps and detailed evaluation
-# -----------------------------------------------------------------------------
-DETAILED_PROMPT_TEMPLATE = """
-You are an expert mathematics teacher evaluating the similarity between two solutions to a math problem. You need to rate how similar the candidate solution is to the reference solution.
-
-EVALUATION CRITERIA:
-1. Mathematical correctness - Are both solutions mathematically sound?
-2. Solution approach - Do they use similar methods or reasoning?
-3. Final answer - Do they arrive at the same conclusion?
-4. Presentation clarity - Are the explanations similarly structured?
-
-INPUTS
-- Problem:
-{PROBLEM}
-
-- Reference solution:
-{REFERENCE_SOLUTION}
-
-- Candidate solution:
-{CANDIDATE_SOLUTION}
-
-INSTRUCTIONS:
-1. First, analyze the mathematical correctness of both solutions
-2. Compare the approaches and reasoning used
-3. Evaluate how well the candidate matches the reference
-4. Assign a similarity score from 0 to 1 where:
-   - 0.0-0.3: Very different (wrong answer or completely different approach)
-   - 0.4-0.6: Somewhat similar (some overlap but significant differences)
-   - 0.7-0.8: Quite similar (similar approach and correct answer)
-   - 0.9-1.0: Very similar (nearly identical reasoning and presentation)
-
-Think through your evaluation step by step, then provide your final score.
-
-OUTPUT FORMAT (must follow exactly)
-After your reasoning, output ONLY one line:
-REWARD: <number between 0 and 1 with 3 decimals>
-""".strip()
-
-
-# =============================================================================
 # TEMPLATE REGISTRY AND UTILITY FUNCTIONS
 # =============================================================================
 
@@ -932,6 +1003,8 @@ PROMPT_TEMPLATES = {
     "v1_1": PROMPT_TEMPLATE_V1_1,
     "v1_2": PROMPT_TEMPLATE_V1_2,
     "v1_3": PROMPT_TEMPLATE_V1_3,
+    "v1_4": PROMPT_TEMPLATE_V1_4,
+    "v1_5": PROMPT_TEMPLATE_V1_5,
     "v2": PROMPT_TEMPLATE_V2,
     "v2_1": PROMPT_TEMPLATE_V2_1,
     "v3": PROMPT_TEMPLATE_V3,

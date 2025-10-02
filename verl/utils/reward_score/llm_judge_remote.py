@@ -138,6 +138,71 @@ def _tokenize(text: str) -> List[str]:
     return tokens
 
 
+def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]:
+    """
+    Compute lexical metrics between reference and candidate solutions.
+    
+    This function computes metrics required by advanced prompt templates (e.g., v4_1)
+    that incorporate lexical similarity information.
+    
+    Args:
+        reference: Ground truth solution
+        candidate: Candidate solution to evaluate
+        
+    Returns:
+        Dict with three metrics:
+        - lexical_token_overlap: Jaccard similarity (0-1)
+        - lexical_lcs_ratio: Normalized LCS ratio (0-1), normalized by ground truth length
+        - length_ratio: Token length ratio (candidate/reference)
+    """
+    # Tokenize both texts
+    ref_tokens = _tokenize(reference)
+    cand_tokens = _tokenize(candidate)
+    
+    # 1. Lexical token overlap (Jaccard similarity)
+    if not ref_tokens and not cand_tokens:
+        lexical_token_overlap = 1.0
+    elif not ref_tokens or not cand_tokens:
+        lexical_token_overlap = 0.0
+    else:
+        ref_set = set(ref_tokens)
+        cand_set = set(cand_tokens)
+        common = ref_set & cand_set
+        union = ref_set | cand_set
+        lexical_token_overlap = len(common) / len(union) if union else 0.0
+    
+    # 2. Lexical LCS ratio (normalized by ground truth length)
+    if not ref_tokens or not cand_tokens:
+        lexical_lcs_ratio = 0.0
+    else:
+        # Compute LCS length using dynamic programming
+        m, n = len(ref_tokens), len(cand_tokens)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if ref_tokens[i-1] == cand_tokens[j-1]:
+                    dp[i][j] = dp[i-1][j-1] + 1
+                else:
+                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+        
+        lcs_length = dp[m][n]
+        # Normalize by ground truth length (reference)
+        lexical_lcs_ratio = lcs_length / len(ref_tokens)
+    
+    # 3. Length ratio (candidate / reference)
+    if not ref_tokens:
+        length_ratio = 0.0 if cand_tokens else 1.0
+    else:
+        length_ratio = len(cand_tokens) / len(ref_tokens)
+    
+    return {
+        "lexical_token_overlap": lexical_token_overlap,
+        "lexical_lcs_ratio": lexical_lcs_ratio,
+        "length_ratio": length_ratio
+    }
+
+
 # Removed lexical fallback - now returns 0.0 when server unavailable
 
 
@@ -226,6 +291,14 @@ def _format_prompt(
     """
     Format the prompt template with the given inputs.
     
+    Supports optional placeholders:
+    - {PROBLEM}: Problem statement
+    - {REFERENCE_SOLUTION}: Ground truth solution
+    - {CANDIDATE_SOLUTION}: Candidate solution
+    - {LEXICAL_TOKEN_OVERLAP}: Jaccard similarity metric (0-1)
+    - {LEXICAL_LCS_RATIO}: Normalized LCS ratio (0-1)
+    - {LENGTH_RATIO}: Length ratio (candidate/reference)
+    
     Args:
         prompt_template: Template string with placeholders
         problem: The math problem statement
@@ -235,19 +308,30 @@ def _format_prompt(
     Returns:
         Formatted prompt string
     """
-    # Check if PROBLEM placeholder exists in template
+    # Build formatting dictionary with base values
+    format_dict = {
+        "REFERENCE_SOLUTION": reference_solution.strip(),
+        "CANDIDATE_SOLUTION": candidate_solution.strip()
+    }
+    
+    # Add problem if placeholder exists
     if "{PROBLEM}" in prompt_template:
-        return prompt_template.format(
-            PROBLEM=problem.strip(),
-            REFERENCE_SOLUTION=reference_solution.strip(),
-            CANDIDATE_SOLUTION=candidate_solution.strip()
-        )
-    else:
-        # Only format REFERENCE_SOLUTION and CANDIDATE_SOLUTION
-        return prompt_template.format(
-            REFERENCE_SOLUTION=reference_solution.strip(),
-            CANDIDATE_SOLUTION=candidate_solution.strip()
-        )
+        format_dict["PROBLEM"] = problem.strip()
+    
+    # Check if template requires lexical metrics
+    needs_metrics = any(
+        placeholder in prompt_template
+        for placeholder in ["{LEXICAL_TOKEN_OVERLAP}", "{LEXICAL_LCS_RATIO}", "{LENGTH_RATIO}"]
+    )
+    
+    # Compute and add lexical metrics if needed
+    if needs_metrics:
+        metrics = _compute_lexical_metrics(reference_solution, candidate_solution)
+        format_dict["LEXICAL_TOKEN_OVERLAP"] = f"{metrics['lexical_token_overlap']:.3f}"
+        format_dict["LEXICAL_LCS_RATIO"] = f"{metrics['lexical_lcs_ratio']:.3f}"
+        format_dict["LENGTH_RATIO"] = f"{metrics['length_ratio']:.3f}"
+    
+    return prompt_template.format(**format_dict)
 
 
 def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
