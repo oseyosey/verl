@@ -1125,8 +1125,21 @@ def main():
     def transform_with_transformed(example, idx):
         transformed_sol = None
         if ds_transformed is not None:
-            # Get the original index if we're using subsampled data
-            orig_idx = idx_to_original.get(idx, idx)
+            # Get the original index - check multiple sources:
+            # 1. If example has 'original_idx' field (for non-members from unused_examples)
+            # 2. If example has 'original_solution_idx' field (for non-members from random_pairing/perturbed)
+            # 3. Otherwise use idx_to_original mapping (for members)
+            orig_idx = None
+            if "original_idx" in example:
+                # Non-member from unused_examples - use stored original index
+                orig_idx = example["original_idx"]
+            elif "original_solution_idx" in example:
+                # Non-member from random_pairing/perturbed - use solution's original index
+                orig_idx = example["original_solution_idx"]
+            else:
+                # Member data - use idx_to_original mapping
+                orig_idx = idx_to_original.get(idx, idx)
+            
             if orig_idx < len(ds_transformed):
                 transformed_sol = ds_transformed[orig_idx]["solution"]
         
