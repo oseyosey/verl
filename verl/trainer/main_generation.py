@@ -15,6 +15,7 @@
 Generate responses given a dataset of prompts
 """
 
+import copy
 import os
 
 import hydra
@@ -116,6 +117,35 @@ def main_task(config):
     chat_lst = dataset[config.data.prompt_key].tolist()
 
     chat_lst = [chat.tolist() for chat in chat_lst]
+    
+    # Handle assistant prefix if configured
+    assistant_prefix_key = config.data.get("assistant_prefix_key")
+    if assistant_prefix_key:
+        print(f"Processing assistant prefix with key: {assistant_prefix_key}")
+        processed_chat_lst = []
+        prefix_count = 0
+        for i, messages in enumerate(chat_lst):
+            # Check for assistant prefix in extra_info
+            assistant_prefix = None
+            if "extra_info" in dataset.columns:
+                extra_info = dataset.iloc[i]["extra_info"]
+                if isinstance(extra_info, dict) and assistant_prefix_key in extra_info:
+                    assistant_prefix = extra_info[assistant_prefix_key]
+            
+            # If assistant prefix found, append it to messages
+            if assistant_prefix:
+                messages_with_prefix = copy.deepcopy(messages)
+                messages_with_prefix.append({"role": "assistant", "content": assistant_prefix})
+                processed_chat_lst.append(messages_with_prefix)
+                prefix_count += 1
+                if prefix_count <= 3:  # Show first 3 examples
+                    print(f"  Example {prefix_count}: Added assistant prefix: '{assistant_prefix[:50]}...'")
+            else:
+                processed_chat_lst.append(messages)
+        chat_lst = processed_chat_lst
+        print(f"Total examples with assistant prefix: {prefix_count}/{len(chat_lst)}")
+    else:
+        print("No assistant prefix key configured")
 
     # Optionally filter out prompts that exceed a maximum token length, similar to RLHFDataset
     if OmegaConf.select(config, "data.filter_overlong_prompts"):
@@ -123,10 +153,20 @@ def main_task(config):
 
         def conversation_token_length(conversation_messages) -> int:
             # Build raw prompt string using the chat template, then tokenize to count tokens
+            # Use same template kwargs logic as in the main generation loop
+            template_kwargs = {"add_generation_prompt": True}
+            if assistant_prefix_key:
+                has_assistant_prefix = (
+                    len(conversation_messages) > 0 and 
+                    conversation_messages[-1].get("role") == "assistant"
+                )
+                if has_assistant_prefix:
+                    template_kwargs = {"add_generation_prompt": False, "continue_final_message": True}
+            
             raw_prompt = tokenizer.apply_chat_template(
                 conversation_messages,
-                add_generation_prompt=True,
                 tokenize=False,
+                **template_kwargs,
             )
             return len(tokenizer(raw_prompt, add_special_tokens=False)["input_ids"])
 
@@ -164,15 +204,26 @@ def main_task(config):
     for batch_idx in range(num_batch):
         print(f"[{batch_idx + 1}/{num_batch}] Start to process.")
         batch_chat_lst = chat_lst[batch_idx * config_batch_size : (batch_idx + 1) * config_batch_size]
+        # Determine template kwargs based on whether assistant prefix is used
+        template_kwargs = {"add_generation_prompt": True}
+        if assistant_prefix_key:
+            # Check if any message in the batch has assistant prefix (ends with assistant role)
+            has_assistant_prefix = any(
+                len(messages) > 0 and messages[-1].get("role") == "assistant" 
+                for messages in batch_chat_lst
+            )
+            if has_assistant_prefix:
+                template_kwargs = {"add_generation_prompt": False, "continue_final_message": True}
+        
         inputs = tokenizer.apply_chat_template(
             batch_chat_lst,
-            add_generation_prompt=True,
             padding=True,
             truncation=True,
             max_length=config.rollout.prompt_length,
             return_tensors="pt",
             return_dict=True,
             tokenize=True,
+            **template_kwargs,
         )
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]

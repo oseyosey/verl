@@ -33,6 +33,8 @@ from transformers import PreTrainedTokenizer, ProcessorMixin
 import verl.utils.torch_functional as verl_F
 from verl.utils.model import compute_position_id_with_mask
 
+import pdb
+
 logger = logging.getLogger(__name__)
 
 
@@ -221,6 +223,8 @@ class RLHFDataset(Dataset):
                 assistant_prefix = row_dict["extra_info"].get(self.assistant_prefix_key)
 
         # Prepare messages and template arguments based on prefix existence
+
+        #* IF ASSISTANT PREFIX KEY IS PROVIDED, WE USE IT TO GUIDE MODEL GENERATION, with add_generation_prompt=False (let model continue from the assistant prefix)*#
         if assistant_prefix:
             messages_for_template = copy.deepcopy(messages) # deepcopy to avoid modifying the original messages
             

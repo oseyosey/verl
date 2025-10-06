@@ -1,56 +1,29 @@
 """
-Convert HuggingFaceH4/MATH-500 dataset to verl RL parquet format with MIA support.
+Convert simplescaling/s1K-1.1 dataset to verl RL parquet format with MIA support.
 
 This script:
-- Loads MATH-500 dataset and converts to verl RL format
+- Loads s1K-1.1 dataset and converts to verl RL format
 - Supports both lexical and embedding match types
 - Optionally generates MIA (Membership Inference Attack) data with two methods:
   - Members: Original problem-solution pairs from the dataset (used for fine-tuning)
   - Non-members: Either randomly paired problems/solutions OR unused examples from dataset
 - Saves both RL parquet file and optional MIA JSONL files
+- Field mappings: question->problem, deepseek_attempt->solution, solution->answer
+- Supports using gemini_attempt as perturbed solution field
 
 Usage:
   # Basic conversion without MIA
-  python math500_match_custom_mia.py
-  
-  # With MIA data generation (safer unused examples method)
-  python math500_match_custom_mia.py --mia --mia_nonmember_method unused_examples
-  
-  # With MIA data generation (original random pairing method) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode full_random
-  
-  # With MIA data generation (same problem with random solutions) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode same_problem
+  python s1_match_custom_mia.py
   
   # With perturbed solutions (same problems as members) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --perturbed_dataset_path YOUR_PERTURBED_DATASET
-  
-  # With perturbed solutions (random problems from full dataset) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode full_random --perturbed_dataset_path YOUR_PERTURBED_DATASET
-  
-  # Custom subset size and local embedding matching
-  python math500_match_custom_mia.py --subset_size 300 --match_type embedding --mia
-  
-  # Remote embedding matching (requires TEI server)
-  python math500_match_custom_mia.py --subset_size 300 --match_type embedding_remote --mia
-  
-  # LLM judge with custom prompt template and thinking mode
-  python math500_match_custom_mia.py --match_type llm_judge --llm_prompt_template detailed_rubric --subset_size 100
-  
-  # LLM judge without thinking mode (faster, lower cost)
-  python math500_match_custom_mia.py --match_type llm_judge --no_llm_thinking --llm_max_tokens 256 --subset_size 100
-  
-  # With assistant prefix to guide model generation (25% of solution)
-  python math500_match_custom_mia.py --enable_assistant_prefix --assistant_prefix_ratio 0.25
-  
-  # Reverse member and non-member labels (for testing MIA robustness)
-  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --reverse_member
+  python s1_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --perturbed_solution_field gemini_attempt
 """
 
 import argparse
 import os
 import random
 import json
+import re
 from functools import partial
 from typing import List, Tuple
 
@@ -62,6 +35,26 @@ try:
     from verl.utils.reward_score.llm_judge_prompts import get_prompt_template, list_available_templates
 except ImportError:
     print("Cannot import llm_judge_prompts form verl")
+
+
+def preprocess_solution(text: str) -> str:
+    """
+    Preprocess solution text by removing common prefixes like 'Solution:'.
+    
+    Args:
+        text: Raw solution text
+        
+    Returns:
+        Cleaned solution text
+    """
+    if not text:
+        return text
+    
+    # Remove "Solution:" prefix (case-insensitive, with optional whitespace)
+    cleaned = re.sub(r'^\s*Solution:\s*', '', text, flags=re.IGNORECASE)
+    
+    return cleaned.strip()
+
 
 def transform_example(
     example,
@@ -93,17 +86,17 @@ def transform_example(
     enable_assistant_prefix: bool = False,
     assistant_prefix_ratio: float = 0.25,
 ):
-    """Convert MATH-500 record into verl RL parquet compatible format.
+    """Convert s1K-1.1 record into verl RL parquet compatible format.
 
     Parameters
     ----------
     example : dict
-        A single raw dataset record coming from *HuggingFaceH4/MATH-500*.
+        A single raw dataset record coming from *simplescaling/s1K-1.1*.
     idx : int
         Index within the split – used to create a stable identifier.
     split : str
-        Data split name (e.g. "test"). 
-    match_type : {"lexical", "embedding", "embedding_remote", "llm_judge", "bleurt"}
+        Data split name (e.g. "train"). 
+    match_type : {"lexical", "embedding", "embedding_remote", "llm_judge", "llm_judge_remote", "bleurt"}
         Determines which reward type will be used at training-time and thus
         controls the ``data_source`` string expected by
         ``verl.utils.reward_score.default_compute_score``.
@@ -337,7 +330,7 @@ def create_non_member_pairs(dataset, member_examples: List[dict], num_pairs: int
             # Find the original index of this member problem in the full dataset
             member_original_idx = None
             for j, ex in enumerate(dataset):
-                if str(ex["problem"]).strip() == str(member_problem).strip():
+                if str(ex["question"]).strip() == str(member_problem).strip():
                     member_original_idx = j
                     break
             
@@ -363,13 +356,13 @@ def create_non_member_pairs(dataset, member_examples: List[dict], num_pairs: int
             # Create new example with member problem but random solution
             non_member_ex = {
                 "problem": str(member_ex["problem"]).strip(),
-                "solution": str(solution_ex["solution"]).strip(),
-                "answer": str(solution_ex.get("answer", "")).strip(),  # Use answer from solution source
-                "subject": str(solution_ex.get("subject", "")).strip(),  # Use subject from solution source
-                "level": solution_ex.get("level", 0),  # Use level from solution source
-                "unique_id": str(member_ex.get("unique_id", "")).strip(),  # Keep member's unique_id
-                "original_problem_idx": i,  # Index in member examples
-                "original_solution_idx": sol_idx,  # Index in full dataset
+                "solution": preprocess_solution(str(solution_ex["deepseek_attempt"])).strip(),
+                "answer": str(solution_ex.get("solution", "")).strip(),
+                "subject": str(solution_ex.get("subject", "")).strip(),
+                "level": solution_ex.get("level", 0),
+                "unique_id": str(member_ex.get("unique_id", "")).strip(),
+                "original_problem_idx": i,
+                "original_solution_idx": sol_idx,
                 "is_member": False
             }
             
@@ -407,12 +400,12 @@ def create_non_member_pairs(dataset, member_examples: List[dict], num_pairs: int
             
             # Create new example with mismatched pair
             non_member_ex = {
-                "problem": str(problem_ex["problem"]).strip(),
-                "solution": str(solution_ex["solution"]).strip(),
-                "answer": str(solution_ex.get("answer", "")).strip(),  # Use answer from solution source
-                "subject": str(solution_ex.get("subject", "")).strip(),  # Use subject from solution source
-                "level": solution_ex.get("level", 0),  # Use level from solution source
-                "unique_id": str(problem_ex.get("unique_id", "")).strip(),  # Keep problem's unique_id
+                "problem": str(problem_ex["question"]).strip(),
+                "solution": preprocess_solution(str(solution_ex["deepseek_attempt"])).strip(),
+                "answer": str(solution_ex.get("solution", "")).strip(),
+                "subject": str(solution_ex.get("subject", "")).strip(),
+                "level": solution_ex.get("level", 0),
+                "unique_id": str(problem_ex.get("unique_id", "")).strip(),
                 "original_problem_idx": prob_idx,
                 "original_solution_idx": sol_idx,
                 "is_member": False
@@ -435,12 +428,12 @@ def create_non_member_pairs(dataset, member_examples: List[dict], num_pairs: int
     return non_member_examples
 
 
-def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[dict], num_pairs: int, mode: str = "same_problem", seed: int = 42, verbose: bool = False, original_dataset=None, member_indices=None) -> List[dict]:
+def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[dict], num_pairs: int, mode: str = "same_problem", seed: int = 42, verbose: bool = False, original_dataset=None, member_indices=None, perturbed_solution_field: str = "gemini_attempt") -> List[dict]:
     """
-    Create non-member data by using perturbed solutions from an external dataset.
+    Create non-member data by using perturbed solutions from the same dataset (different field).
     
     Args:
-        perturbed_dataset: The perturbed dataset with same structure as original but different solutions
+        perturbed_dataset: The dataset with perturbed solutions (same dataset, different field)
         member_examples: List of member examples (for same_problem mode)
         num_pairs: Number of non-member pairs to create (equal to member data size)
         mode: "same_problem" (use member problems with corresponding perturbed solutions) or "full_random" (randomly select problems from original dataset)
@@ -448,6 +441,7 @@ def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[di
         verbose: Whether to print debug information
         original_dataset: The original dataset (required for full_random mode)
         member_indices: Original indices of member examples in the full dataset (required for same_problem mode)
+        perturbed_solution_field: Field name in perturbed dataset to use as solution (default: "gemini_attempt")
         
     Returns:
         List of examples with perturbed problem-solution pairs
@@ -475,11 +469,11 @@ def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[di
             # Create new example with member problem but perturbed solution
             non_member_ex = {
                 "problem": str(member_ex["problem"]).strip(),
-                "solution": str(perturbed_ex["solution"]).strip(),
-                "answer": str(perturbed_ex.get("answer", "")).strip(),  # Use answer from perturbed source
-                "subject": str(perturbed_ex.get("subject", "")).strip(),  # Use subject from perturbed source
-                "level": perturbed_ex.get("level", 0),  # Use level from perturbed source
-                "unique_id": str(member_ex.get("unique_id", "")).strip(),  # Keep member's unique_id
+                "solution": preprocess_solution(str(perturbed_ex[perturbed_solution_field])).strip(),
+                "answer": str(perturbed_ex.get("solution", "")).strip(),
+                "subject": str(perturbed_ex.get("subject", "")).strip(),
+                "level": perturbed_ex.get("level", 0),
+                "unique_id": str(member_ex.get("unique_id", "")).strip(),
                 "is_member": False,
             }
             
@@ -507,14 +501,14 @@ def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[di
             original_ex = original_dataset[idx]  # Problem from original dataset
             perturbed_ex = perturbed_dataset[idx]  # Corresponding perturbed solution
             
-            # Use problem from original dataset, solution from perturbed dataset (maintaining i->i correspondence)
+            # Use problem from original dataset, solution from perturbed field (maintaining i->i correspondence)
             non_member_ex = {
-                "problem": str(original_ex["problem"]).strip(),  # Problem from original at random index
-                "solution": str(perturbed_ex["solution"]).strip(),  # Corresponding perturbed solution
-                "answer": str(perturbed_ex.get("answer", "")).strip(),  # Use answer from perturbed source
-                "subject": str(perturbed_ex.get("subject", "")).strip(),  # Use subject from perturbed source
-                "level": perturbed_ex.get("level", 0),  # Use level from perturbed source
-                "unique_id": str(original_ex.get("unique_id", "")).strip(),  # Keep original's unique_id
+                "problem": str(original_ex["question"]).strip(),
+                "solution": preprocess_solution(str(perturbed_ex[perturbed_solution_field])).strip(),
+                "answer": str(perturbed_ex.get("solution", "")).strip(),
+                "subject": str(perturbed_ex.get("subject", "")).strip(),
+                "level": perturbed_ex.get("level", 0),
+                "unique_id": str(original_ex.get("unique_id", "")).strip(),
                 "is_member": False,
             }
             
@@ -525,6 +519,7 @@ def create_non_member_from_perturbed(perturbed_dataset, member_examples: List[di
     
     if verbose:
         print(f"[create_non_member_from_perturbed] Created {len(non_member_examples)} non-member examples using mode '{mode}'")
+        print(f"[create_non_member_from_perturbed] Using perturbed solution field: {perturbed_solution_field}")
         # Show a few examples of the pairing
         for i in range(min(3, len(non_member_examples))):
             if mode == "same_problem":
@@ -626,9 +621,9 @@ def create_non_member_from_unused(dataset, member_indices: List[int], num_pairs:
         
         # Create non-member example (original problem-solution pair, just not seen during training)
         non_member_ex = {
-            "problem": str(ex["problem"]).strip(),
-            "solution": str(ex["solution"]).strip(),
-            "answer": str(ex.get("answer", "")).strip(),
+            "problem": str(ex["question"]).strip(),
+            "solution": preprocess_solution(str(ex["deepseek_attempt"])).strip(),
+            "answer": str(ex.get("solution", "")).strip(),
             "subject": str(ex.get("subject", "")).strip(),
             "level": ex.get("level", 0),
             "unique_id": str(ex.get("unique_id", "")).strip(),
@@ -830,22 +825,38 @@ def _write_jsonl(path: str, rows: List[dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def normalize_dataset_fields(example):
+    """
+    Normalize S1 dataset fields to standard names.
+    Maps: question->problem, deepseek_attempt->solution, solution->answer
+    """
+    normalized = {
+        "problem": str(example["question"]).strip(),
+        "solution": preprocess_solution(str(example["deepseek_attempt"])).strip(),
+        "answer": str(example.get("solution", "")).strip(),
+        "subject": str(example.get("subject", "")).strip() if "subject" in example else "",
+        "level": example.get("level", 0) if "level" in example else 0,
+        "unique_id": str(example.get("unique_id", "")).strip() if "unique_id" in example else "",
+    }
+    return normalized
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Convert HuggingFaceH4/MATH-500 dataset to verl RL parquet format "
+            "Convert simplescaling/s1K-1.1 dataset to verl RL parquet format "
             "with optional MIA (Membership Inference Attack) data generation."
         )
     )
     parser.add_argument(
         "--dataset_path",
-        default="HuggingFaceH4/MATH-500",
-        help="HuggingFace dataset path to load (default: HuggingFaceH4/MATH-500)",
+        default="simplescaling/s1K-1.1",
+        help="HuggingFace dataset path to load (default: simplescaling/s1K-1.1)",
     )
     parser.add_argument(
         "--dataset_split",
-        default="test",
-        help="Dataset split to use (default: test)",
+        default="train",
+        help="Dataset split to use (default: train)",
     )
     parser.add_argument(
         "--transformed_dataset_path",
@@ -858,14 +869,9 @@ def main():
         help="Dataset split to use for transformed dataset (default: train)",
     )
     parser.add_argument(
-        "--perturbed_dataset_path",
-        default=None,
-        help="Optional HuggingFace dataset path containing perturbed solutions for MIA non-member generation",
-    )
-    parser.add_argument(
-        "--perturbed_dataset_split",
-        default="train",
-        help="Dataset split to use for perturbed dataset (default: train)",
+        "--perturbed_solution_field",
+        default="gemini_attempt",
+        help="Field name to use as perturbed solution (default: gemini_attempt)",
     )
     parser.add_argument(
         "--match_type",
@@ -893,9 +899,7 @@ def main():
         default=500,
         help=(
             "Number of examples to use as member data (for MIA evaluation). "
-            "Defaults to the full set (500). If greater than the dataset size, the full set is used. "
-            "Note: When using MIA with unused_examples method, this should be <= the number of "
-            "unused examples available after fine-tuning."
+            "Defaults to 500. If greater than the dataset size, the full set is used."
         ),
     )
     parser.add_argument(
@@ -916,12 +920,12 @@ def main():
     )
     parser.add_argument(
         "--output_dir",
-        default="~/data/math500_match_custom_mia/rl",
+        default="~/data/s1_match_custom_mia/rl",
         help="Directory where the output Parquet file and optional JSONL files will be saved.",
     )
     parser.add_argument(
         "--output_name",
-        default="math500_mia",
+        default="s1_mia",
         help="Base name used for MIA JSONL outputs when --mia is set.",
     )
     parser.add_argument(
@@ -937,7 +941,7 @@ def main():
             "Method for creating non-member data: "
             "'random_pairing' (original method: randomly pair problems with solutions), "
             "'unused_examples' (safer method: use examples not seen during fine-tuning), "
-            "'perturbed_solution' (use perturbed solutions from external dataset)."
+            "'perturbed_solution' (use perturbed solutions from same dataset, different field)."
         ),
     )
     parser.add_argument(
@@ -1004,7 +1008,7 @@ def main():
         "--llm_batch_size",
         type=int,
         default=128,
-        help="Batch size for LLM judge remote processing (default: 1).",
+        help="Batch size for LLM judge remote processing (default: 128).",
     )
     parser.add_argument(
         "--bleurt_checkpoint",
@@ -1093,6 +1097,12 @@ def main():
     if args.verbose:
         print(f"[main] Loaded {len(ds_full)} examples from {args.dataset_path} ({args.dataset_split} split)")
     
+    # Normalize dataset fields (question->problem, deepseek_attempt->solution, solution->answer)
+    ds_full = ds_full.map(normalize_dataset_fields, remove_columns=ds_full.column_names)
+    
+    if args.verbose:
+        print(f"[main] Normalized dataset fields (question->problem, deepseek_attempt->solution, solution->answer)")
+    
     # Load transformed dataset if provided
     ds_transformed = None
     if args.transformed_dataset_path:
@@ -1103,19 +1113,33 @@ def main():
             raise ValueError(
                 f"Transformed dataset size ({len(ds_transformed)}) does not match main dataset size ({len(ds_full)})"
             )
+        # Normalize transformed dataset fields as well
+        ds_transformed = ds_transformed.map(normalize_dataset_fields, remove_columns=ds_transformed.column_names)
     
-    # Load perturbed dataset if provided and using perturbed_solution method
+    # For perturbed solutions, we use the same dataset but different field
+    # Load the original dataset again to access the perturbed field
     ds_perturbed = None
     if args.mia and args.mia_nonmember_method == "perturbed_solution":
-        if not args.perturbed_dataset_path:
-            raise ValueError("perturbed_dataset_path is required when using mia_nonmember_method='perturbed_solution'")
-        ds_perturbed = datasets.load_dataset(args.perturbed_dataset_path, split=args.perturbed_dataset_split)
+        ds_perturbed_raw = datasets.load_dataset(args.dataset_path, split=args.dataset_split)
         if args.verbose:
-            print(f"[main] Loaded {len(ds_perturbed)} perturbed examples from {args.perturbed_dataset_path} ({args.perturbed_dataset_split} split)")
-        if len(ds_perturbed) != len(ds_full):
-            raise ValueError(
-                f"Perturbed dataset size ({len(ds_perturbed)}) does not match main dataset size ({len(ds_full)})"
-            )
+            print(f"[main] Loaded {len(ds_perturbed_raw)} examples for perturbed solutions from {args.dataset_path}")
+            print(f"[main] Using field '{args.perturbed_solution_field}' as perturbed solution")
+        
+        # Normalize with perturbed solution field
+        def normalize_perturbed_fields(example):
+            normalized = {
+                "problem": str(example["question"]).strip(),
+                "solution": preprocess_solution(str(example[args.perturbed_solution_field])).strip(),
+                "answer": str(example.get("solution", "")).strip(),
+                "subject": str(example.get("subject", "")).strip() if "subject" in example else "",
+                "level": example.get("level", 0) if "level" in example else 0,
+                "unique_id": str(example.get("unique_id", "")).strip() if "unique_id" in example else "",
+            }
+            # Keep the perturbed field for later use
+            normalized[args.perturbed_solution_field] = preprocess_solution(str(example[args.perturbed_solution_field])).strip()
+            return normalized
+        
+        ds_perturbed = ds_perturbed_raw.map(normalize_perturbed_fields)
 
     # Determine the actual fine-tuning subset size
     finetune_size = args.finetune_subset_size if args.finetune_subset_size is not None else args.subset_size
@@ -1257,7 +1281,7 @@ def main():
         elif args.mia_nonmember_method == "unused_examples":
             print(f"Creating non-member examples from unused dataset entries...")
             
-            #* Get the fine-tuning indices (what was actually used for training) *#
+            # Get the fine-tuning indices (what was actually used for training)
             finetune_rng = random.Random(args.subset_seed)
             finetune_indices = finetune_rng.sample(range(len(ds_full)), finetune_size)
             finetune_indices.sort()
@@ -1299,7 +1323,8 @@ def main():
                 seed=args.subset_seed + 1, 
                 verbose=args.verbose,
                 original_dataset=ds_full,
-                member_indices=member_indices
+                member_indices=member_indices,
+                perturbed_solution_field=args.perturbed_solution_field
             )
             final_member_indices = member_indices  # No subsampling needed
         else:
@@ -1499,6 +1524,8 @@ def main():
             index_info["nonmember_problem_indices"] = problem_indices
             index_info["nonmember_solution_indices"] = solution_indices
             index_info["nonmember_size"] = len(non_member_examples)
+            if args.mia_nonmember_method == "perturbed_solution":
+                index_info["perturbed_solution_field"] = args.perturbed_solution_field
         
         with open(indices_path, "w") as f:
             json.dump(index_info, f, indent=2)
