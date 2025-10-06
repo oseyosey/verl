@@ -593,7 +593,7 @@ def compute_score(
     # Extract server configuration
     server_url = config.get("server_url")
     api_key = config.get("api_key")
-    timeout = float(config.get("timeout", os.getenv("LLM_JUDGE_SERVER_TIMEOUT", "60")))
+    timeout = float(config.get("timeout", os.getenv("LLM_JUDGE_SERVER_TIMEOUT", "180")))
     
     # Extract LLM configuration
     model_name = config.get("model_name", config.get("model", DEFAULT_MODEL_NAME))

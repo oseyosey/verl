@@ -96,6 +96,23 @@ OUTPUT FORMAT (must follow exactly)
 REWARD: <number between 0 and 1 with 3 decimals>
 """.strip()
 
+PROMPT_TEMPLATE_V0_1_QWEN = """TASK DESCRIPTION
+Rate the two math problem solutions (one reference, one candidate) in terms of their similarity.  Return a real value between 0-1 with 3 decimals.
+
+SCOPE OF COMPARISON
+- Evaluate only the SOLUTION content. Ignore any text that reproduce the problem statement or outputs generic headings/boilerplate (e.g., "\\assistant", "assistant", “problem:").
+- Do not give credit for tokens/phrases that appear that is not relevant to the solution (e.g. "assistant"); similarity must come from solution reasoning/derivations/explanations and final answer.
+
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+OUTPUT FORMAT (must follow exactly)
+REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
 
 # -----------------------------------------------------------------------------
 # V1 - V0, enhanced with evaluation criteria (includes problem statement)
@@ -106,7 +123,7 @@ Rate the two math problem solutions (one reference, one candidate) in terms of t
 EVALUATION CRITERIA:
 1. Mathematical correctness - Are candidate solution mathematically sound as the reference solution?
 2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
-3. Final answer - Do candidate solution arrive at the same conclusion as the reference solution?
+3. Final answer - Do candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
 4. Overall clarity - Are the reasoning and solution steps correct, sonsistent, and logically sound as the reference solution?
 
 
@@ -136,7 +153,7 @@ Rate the two math problem solutions (one reference, one candidate) in terms of t
 EVALUATION CRITERIA
 1. Mathematical correctness - Are candidate solution mathematically sound as the reference solution?
 2. Solution approach - Do candidate solution use similar methods or reasoning as the reference solution? 
-3. Final answer - Do candidate solution arrive at the same conclusion as the reference solution?
+3. Final answer - Do candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
 4. Overall clarity - Are the reasoning and solution steps correct, sonsistent, and logically sound as the reference solution?
 
 
@@ -151,7 +168,6 @@ OUTPUT FORMAT (must follow exactly)
 Output ONLY one line:
 REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
-
 
 # -----------------------------------------------------------------------------
 # V1.2 - Enhanced criteria with boxed answer focus
@@ -210,13 +226,14 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 
 # -----------------------------------------------------------------------------
 # V1.4 - Enhanced criteria with grounding on lexical metrics
+# updated: changed 3. final answer from conlusion to answer (enclosed in  "\\boxed{{}}")
 # -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V1_4 = """Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Return a real value between 0-1 with 3 decimals.
 
 EVALUATION CRITERIA
 1. Mathematical correctness - Are the candidate solution’s steps mathematically sound as the reference solution?
 2. Solution approach - Do the candidate solution use similar methods or reasoning as the reference solution?
-3. Final answer - Does the candidate solution arrive at the same conclusion as the reference solution?
+3. Final answer - Does the candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
 4. Overall clarity - Are the reasoning and solution steps correct, consistent, and logically sound as the reference solution?
 5. Lexical overlap - Anchor this score to the AUXILIARY METRICS (use max(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO) as the primary score).
 6. Length proximity - Anchor this score to the AUXILIARY METRICS (use LENGTH_RATIO as the primary score).
@@ -241,16 +258,17 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 
 # -----------------------------------------------------------------------------
 # V1.5 - Enhanced criteria with grounding on lexical metrics with subscore.
+# updated: changed 3. final answer from conlusion to answer (enclosed in  "\\boxed{{}}")
 # -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V1_5 = """Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Evaluate the similarity of the candidate solution to the reference solution on the following criteria. 
-Output sub-scores for each criterion as a real value between 0-1 with 3 decimals. Finally, output the overall reward as a real value between 0-1 with 3 decimals.
+Output sub-scores for each criterion as a numerical value between 0-100. Finally, consider sub-scores and output the overall reward as a numerical value between 0-100.
 
 EVALUATION CRITERIA
 1. Mathematical correctness - Are the candidate solution’s steps mathematically sound as the reference solution?
 2. Solution approach - Do the candidate solution use similar methods or reasoning as the reference solution?
-3. Final answer - Does the candidate solution arrive at the same conclusion as the reference solution?
+3. Final answer - Does the candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
 4. Overall clarity - Are the reasoning and solution steps correct, consistent, and logically sound as the reference solution?
-5. Lexical overlap - Anchor this score to the AUXILIARY METRICS (use max(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO) as the primary score).
+5. Lexical overlap - Anchor this score to the AUXILIARY METRICS (use average(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO) as the primary score).
 6. Length proximity - Anchor this score to the AUXILIARY METRICS (use LENGTH_RATIO as the primary score).
 
 INPUTS
@@ -266,14 +284,56 @@ AUXILIARY METRICS (for criteria 5–6; solution text only)
 - LENGTH_RATIO:          {LENGTH_RATIO}             # |cand_tokens| / |GT_tokens|
 
 OUTPUT FORMAT (must follow exactly)
+MATHEMATICAL_CORRECTNESS: <number between 0 and 100>
+SOLUTION_APPROACH:  <number between 0 and 100>
+FINAL_ANSWER: <number between 0 and 100>
+OVERALL_CLARITY:  <number between 0 and 100>
+LEXICAL_OVERLAP:  <number between 0 and 100>
+LENGTH_PROXIMITY:  <number between 0 and 100>
+FINAL REWARD: <number between 0 and 100>
+""".strip()
+
+
+# -----------------------------------------------------------------------------
+# V1.6 - Enhanced criteria with grounding on lexical metrics with subscore with caps.
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATE_V1_6 = """Rate the two math problem solutions (one reference, one candidate) in terms of their similarity. Evaluate the similarity of the candidate solution to the reference solution on the following criteria. 
+Output sub-scores for each criterion as a real value between 0-1 with 3 decimals. Finally, output the overall reward as a real value between 0-1 with 3 decimals.
+
+EVALUATION CRITERIA
+1. Mathematical correctness - Are the candidate solution’s steps mathematically sound as the reference solution?
+2. Solution approach - Do the candidate solution use similar methods or reasoning as the reference solution?
+3. Final answer - Does the candidate solution arrive at the same answer (enclosed in  "\\boxed{{}}") as the reference solution?
+4. Overall clarity - Are the reasoning and solution steps correct, consistent, and logically sound as the reference solution?
+5. Lexical overlap - Anchor this score to the AUXILIARY METRICS (LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO).
+6. Length proximity - Anchor this score to the AUXILIARY METRICS (LENGTH_RATIO).
+
+INPUTS
+- Reference solution:
+{REFERENCE_SOLUTION}
+
+- Candidate solution:
+{CANDIDATE_SOLUTION}
+
+AUXILIARY METRICS (for criteria 5–6; solution text only)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}    # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}        # [0,1] (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}             # |cand_tokens| / |GT_tokens|
+
+GLOBAL CAPS (apply AFTER summing)
+- If two or more of the criteria (1, 2, 3, 4) have low score, the final reward will be capped at 50. The maximum reward you can return is 50.
+
+OUTPUT FORMAT (must follow exactly)
 MATHEMATICAL_CORRECTNESS: <real value between 0 and 1 with 3 decimals>
 SOLUTION_APPROACH: <real value between 0 and 1 with 3 decimals>
 FINAL_ANSWER: <real value between 0 and 1 with 3 decimals>
 OVERALL_CLARITY: <real value between 0 and 1 with 3 decimals>
 LEXICAL_OVERLAP: <real value between 0 and 1 with 3 decimals>
 LENGTH_PROXIMITY: <real value between 0 and 1 with 3 decimals>
+CAP APPLIED: <yes|no>
 REWARD: <real value between 0 and 1 with 3 decimals>
 """.strip()
+
 
 
 # -----------------------------------------------------------------------------
@@ -951,7 +1011,7 @@ AUXILIARY METRICS (you MUST use these to anchor scoring for LEXICAL and LENGTH)
    (Programmatic computation that mirrors the same math is acceptable.)
 
 2) Lexical/phrase/token overlap:
-   (Use the best of LEXICAL_TOKEN_OVERLAP and LEXICAL_LCS_RATIO as the lexical score)
+   (Average LEXICAL_TOKEN_OVERLAP and LEXICAL_LCS_RATIO as the lexical score)
 
 3) Length proximity:
    (Use LENGTH_RATIO as length proximity score)
@@ -987,6 +1047,90 @@ INPUTS
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# V5 - Data contamination detection with si
+# -----------------------------------------------------------------------------##
+PROMPT_TEMPLATE_V5 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single numeric score in [0,100] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: reasoning pipeline, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct methods are NOT contamination.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not mirror GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Style similarity: Does the CANDIDATE mirror GT’s style/framing/phrasing?
+- Approach alignment: Does the CANDIDATE mirror GT’s key steps/order/transformations?
+- Lexical similarity: Use average(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO); adjust for paraphrase/ordering; discount repetition.
+- Length proximity: Use LENGTH_RATIO as primary signal (closer ≈ higher).
+- Final answer (enclosed in "\\boxed{{}}") : Exact match slightly increases contamination likelihood; mismatch reduces it.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 100>
+
+INPUTS
+- PROBLEM:
+{PROBLEM}
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+PROMPT_TEMPLATE_V5_1 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single numeric score in [0,100] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: reasoning pipeline, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct methods are NOT contamination.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not mirror GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Style similarity: Does the CANDIDATE mirror GT’s style/framing/phrasing?
+- Approach alignment: Does the CANDIDATE mirror GT’s key steps/order/transformations?
+- Lexical similarity: Use average(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO); adjust for paraphrase/ordering; discount repetition.
+- Length proximity: Use LENGTH_RATIO as primary signal (closer ≈ higher).
+- Final answer (enclosed in "\\boxed{{}}") : Exact match slightly increases contamination likelihood; mismatch reduces it.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 100>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
 # =============================================================================
 # TEMPLATE REGISTRY AND UTILITY FUNCTIONS
 # =============================================================================
@@ -999,6 +1143,7 @@ PROMPT_TEMPLATES = {
     "detailed": DETAILED_PROMPT_TEMPLATE,
     "v0": PROMPT_TEMPLATE_V0,
     "v0_1": PROMPT_TEMPLATE_V0_1,
+    "v0_1_qwen": PROMPT_TEMPLATE_V0_1_QWEN,
     "v1": PROMPT_TEMPLATE_V1,
     "v1_1": PROMPT_TEMPLATE_V1_1,
     "v1_2": PROMPT_TEMPLATE_V1_2,
@@ -1017,6 +1162,8 @@ PROMPT_TEMPLATES = {
     "v3_7": PROMPT_TEMPLATE_V3_7,
     "v4": PROMPT_TEMPLATE_V4,
     "v4_1": PROMPT_TEMPLATE_V4_1,
+    "v5": PROMPT_TEMPLATE_V5,
+    "v5_1": PROMPT_TEMPLATE_V5_1,
 }
 
 
