@@ -1094,10 +1094,10 @@ INPUTS
 PROMPT_TEMPLATE_V5_1 = """
 TASK
 Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
-Return a single numeric score in [0,100] (higher = more likely contaminated/memorized).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
 
 DEFINITION (what counts as contamination)
-High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: reasoning pipeline, phrasing/tokens, common sequences, length, and reaches the same final answer.
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps, reasoning pipeline, phrasing/tokens, common sequences, length, and reaches the same final answer.
 Different-but-correct methods are NOT contamination.
 
 SCOPE
@@ -1113,12 +1113,12 @@ AUXILIARY METRICS (use as anchors for lexical/length)
 EVALUATION CRITERIA
 - Style similarity: Does the CANDIDATE mirror GT’s style/framing/phrasing?
 - Approach alignment: Does the CANDIDATE mirror GT’s key steps/order/transformations?
-- Lexical similarity: Use average(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO); adjust for paraphrase/ordering; discount repetition.
+- Lexical similarity: Use average(LEXICAL_TOKEN_OVERLAP, LEXICAL_LCS_RATIO).
 - Length proximity: Use LENGTH_RATIO as primary signal (closer ≈ higher).
 - Final answer (enclosed in "\\boxed{{}}") : Exact match slightly increases contamination likelihood; mismatch reduces it.
 
 FINAL OUTPUT FORMAT (must follow exactly, no extra words)
-CONTAMINATION REWARD: <number between 0 and 100>
+CONTAMINATION REWARD:  <number between 0 and 1 with 3 decimals>
 
 INPUTS
 
@@ -1129,6 +1129,92 @@ INPUTS
 {CANDIDATE_SOLUTION}
 
 """.strip()
+
+
+PROMPT_TEMPLATE_V5_2 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps,reasoning pipeline, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct methods are NOT contamination.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Style similarity: Does the CANDIDATE resembles GT’s style/framing/phrasing?
+- Approach alignment: Does the CANDIDATE mirror GT’s key steps/order/transformations?
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+- Length proximity: Use LENGTH_RATIO as primary signal (closer ≈ higher).
+- Final answer (enclosed in "\\boxed{{}}") : Exact match slightly increases contamination likelihood; mismatch reduces it.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+PROMPT_TEMPLATE_V5_3 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps, reasoning structure, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct approaches are NOT contamination, pay very close attention to the reasoning structure and steps.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Style similarity: Does the CANDIDATE closely resembles GT’s solution style, framing, phrasing?
+- Approach alignment: Does the CANDIDATE closely mirror GT’s solutions structure, steps, and reasoning?
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+- Length proximity: Use LENGTH_RATIO as primary signal (closer ≈ higher).
+- Final answer (enclosed in "\\boxed{{}}") : Exact match slightly increases contamination likelihood; mismatch reduces it.
+
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+
 
 
 # =============================================================================
@@ -1164,6 +1250,8 @@ PROMPT_TEMPLATES = {
     "v4_1": PROMPT_TEMPLATE_V4_1,
     "v5": PROMPT_TEMPLATE_V5,
     "v5_1": PROMPT_TEMPLATE_V5_1,
+    "v5_2": PROMPT_TEMPLATE_V5_2,
+    "v5_3": PROMPT_TEMPLATE_V5_3,
 }
 
 
