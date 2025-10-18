@@ -1361,12 +1361,19 @@ def main():
             print("\n=== REVERSING MEMBER AND NON-MEMBER LABELS ===")
             print("Original members will become non-members, and vice versa")
             
-            # Swap is_member flags in both datasets
+            # Swap is_member flags and ground truth fields in both datasets
             def flip_to_nonmember(example):
                 new_example = dict(example)
                 if "extra_info" in new_example and isinstance(new_example["extra_info"], dict):
                     new_example["extra_info"] = dict(new_example["extra_info"])
                     new_example["extra_info"]["is_member"] = False
+                    
+                    # Swap member_ground_truth and nonmember_ground_truth if they exist
+                    if "member_ground_truth" in new_example["extra_info"] and "nonmember_ground_truth" in new_example["extra_info"]:
+                        member_gt = new_example["extra_info"]["member_ground_truth"]
+                        nonmember_gt = new_example["extra_info"]["nonmember_ground_truth"]
+                        new_example["extra_info"]["member_ground_truth"] = nonmember_gt
+                        new_example["extra_info"]["nonmember_ground_truth"] = member_gt
                 return new_example
             
             def flip_to_member(example):
@@ -1374,6 +1381,13 @@ def main():
                 if "extra_info" in new_example and isinstance(new_example["extra_info"], dict):
                     new_example["extra_info"] = dict(new_example["extra_info"])
                     new_example["extra_info"]["is_member"] = True
+                    
+                    # Swap member_ground_truth and nonmember_ground_truth if they exist
+                    if "member_ground_truth" in new_example["extra_info"] and "nonmember_ground_truth" in new_example["extra_info"]:
+                        member_gt = new_example["extra_info"]["member_ground_truth"]
+                        nonmember_gt = new_example["extra_info"]["nonmember_ground_truth"]
+                        new_example["extra_info"]["member_ground_truth"] = nonmember_gt
+                        new_example["extra_info"]["nonmember_ground_truth"] = member_gt
                 return new_example
             
             # Apply the flips

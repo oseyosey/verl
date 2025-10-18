@@ -336,6 +336,8 @@ REWARD: <real value between 0 and 1 with 3 decimals>
 
 
 
+
+
 # -----------------------------------------------------------------------------
 # V2 - Comprehensive evaluation with surface & semantic resemblance
 # -----------------------------------------------------------------------------
@@ -1048,8 +1050,8 @@ INPUTS
 
 
 # -----------------------------------------------------------------------------
-# V5 - Data contamination detection with si
-# -----------------------------------------------------------------------------##
+# V5 - Data contamination detection with 
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V5 = """
 TASK
 Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
@@ -1172,6 +1174,9 @@ INPUTS
 """.strip()
 
 
+# -----------------------------------------------------------------------------
+# Refine DEFINITION and EVALUATION CRITERIA from V5_2.
+# -----------------------------------------------------------------------------
 PROMPT_TEMPLATE_V5_3 = """
 TASK
 Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
@@ -1214,6 +1219,377 @@ INPUTS
 """.strip()
 
 
+PROMPT_TEMPLATE_V5_4 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps, reasoning structure, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct approaches are NOT contamination, pay very close attention to the reasoning structure and steps.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Style similarity: Does the CANDIDATE closely resembles GT’s solution style, structure, phrasing?
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+- Length proximity: Use LENGTH_RATIO (closer ≈ higher).
+
+Final reward is the average of the four evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+PROMPT_TEMPLATE_V5_5 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps, reasoning structure, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct approaches are NOT contamination, pay very close attention to the reasoning structure and steps.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+- Length proximity: Use LENGTH_RATIO (closer ≈ higher).
+
+Final contamination reward SHOULD BE the average of the three evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+PROMPT_TEMPLATE_V5_6 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps, reasoning structure, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct approaches are NOT contamination, pay very close attention to the reasoning structure and steps.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+
+Final contamination reward is the average of the two evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+PROMPT_TEMPLATE_V5_7 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+DEFINITION (what counts as contamination)
+High likelihood when the CANDIDATE closely MIRRORS or PARAPHRASES the GROUND TRUTH in: solution steps, reasoning structure, phrasing/tokens, common sequences, length, and reaches the same final answer.
+Different-but-correct approaches are NOT contamination, pay very close attention to the reasoning structure and steps.
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for EVALUATION CRITERIA)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+
+Final reward should directly calculated from the average of the evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+
+""".strip()
+
+
+PROMPT_TEMPLATE_V5_8 = """
+TASK
+Judge the likelihood of DATA CONTAMINATION between two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more likely contaminated/memorized).
+
+AUXILIARY METRICS (use as anchors for EVALUATION CRITERIA)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+
+Final contamination reward SHOULD BE LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}, 
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+CONTAMINATION REWARD: <number between 0 and 1 with 3 decimals>
+""".strip()
+
+
+
+
+# -----------------------------------------------------------------------------
+# V6 - Data similarity. This is used to judge the similarity of two math distillation solutions.
+# -----------------------------------------------------------------------------
+
+PROMPT_TEMPLATE_V6_1 = """
+TASK
+Judge the similarity of two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more similar).
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Solution approach similarity: Does the CANDIDATE closely resembles GT’s solution style, reasoning, structure, phrasing? BE VERY STRICT ON THIS.
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+- Length proximity: Use LENGTH_RATIO.
+
+Final similarity reward SHOULD BE the average of the evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+SIMILARITY REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+
+
+PROMPT_TEMPLATE_V6_2 = """
+TASK
+Judge the similarity of two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more similar).
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+- LENGTH_RATIO:          {LENGTH_RATIO}            # |cand_tokens| / |GT_tokens|
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+- Length proximity: Use LENGTH_RATIO.
+
+Final similarity reward SHOULD BE the average of the evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+SIMILARITY REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+PROMPT_TEMPLATE_V6_3 = """
+TASK
+Judge the similarity of two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more similar).
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+
+Final similarity reward SHOULD BE the average of the evaluation criteria.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+SIMILARITY REWARD: <number between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+
+PROMPT_TEMPLATE_V6_4= """
+TASK
+Judge the similarity of two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more similar).
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+
+BONUS CRITERIA
+- If solution approach is similar, consistent, and logically sound as the GROUND TRUTH, +0.2 bonus.
+- If solution answer is the same as the GROUND TRUTH (enclosed in \\boxed{{}}), +0.1 bonus.
+
+Final similarity reward SHOULD BE the average of the evaluation criteria, plus the bonus criteria.
+
+GLOBAL CAPS (apply AFTER summing)
+- The maximum reward you can return is 1.0.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+TOKEN SIMILARITY: LEXICAL_TOKEN_OVERLAP
+SEQUENCE SIMILARITY: LEXICAL_LCS_RATIO
+BONUS: <real value between 0 and 0.3 with 3 decimals>
+CONTAMINATION REWARD: <real value between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
+PROMPT_TEMPLATE_V6_5= """
+TASK
+Judge the similarity of two math solutions (GROUND TRUTH vs CANDIDATE).
+Return a single real-valued score in [0,1] (higher = more similar).
+
+SCOPE
+- Compare SOLUTION content only (ignore PROBLEM text and boilerplate like “Problem:”, “### Problem”).
+- Discount repetitive padding; do not award overlap for repeated spans.
+- Code is valid as solution steps; code-only verification that does not resemble GT reasoning counts as a different approach.
+
+AUXILIARY METRICS (use as anchors for lexical/length)
+- LEXICAL_TOKEN_OVERLAP: {LEXICAL_TOKEN_OVERLAP}   # [0,1]
+- LEXICAL_LCS_RATIO:     {LEXICAL_LCS_RATIO}       # [0,1]  (e.g., LCS_len / |GT_tokens|)
+
+EVALUATION CRITERIA
+- Lexical token similarity: Use LEXICAL_TOKEN_OVERLAP.
+- Lexical sequence similarity: Use LEXICAL_LCS_RATIO.
+
+BONUS CRITERIA
+- If solution approach is similar to the GROUND TRUTH, +0.2 bonus.
+- If solution answer is the same as the GROUND TRUTH (enclosed in \\boxed{{}}), +0.1 bonus.
+
+PENALTY CRITERIA
+- If solution approach is different from the GROUND TRUTH, -0.2 penalty.
+
+Final similarity reward SHOULD BE the average of the evaluation criteria, plus the bonus criteria, minus the penalty criteria.
+
+GLOBAL CAPS (apply AFTER summing)
+- The maximum reward you can return is 1.0.
+- The minimum reward you can return is 0.0.
+
+FINAL OUTPUT FORMAT (must follow exactly, no extra words)
+TOKEN SIMILARITY: LEXICAL_TOKEN_OVERLAP
+SEQUENCE SIMILARITY: LEXICAL_LCS_RATIO
+BONUS: <real value between 0 and 0.3 with 3 decimals>
+PENALTY: <real value between 0 and 0.2 with 3 decimals>
+CONTAMINATION REWARD: <real value between 0 and 1 with 3 decimals>
+
+INPUTS
+
+- GROUND TRUTH solution:
+{REFERENCE_SOLUTION}
+
+- CANDIDATE solution:
+{CANDIDATE_SOLUTION}
+""".strip()
+
 
 
 
@@ -1252,6 +1628,16 @@ PROMPT_TEMPLATES = {
     "v5_1": PROMPT_TEMPLATE_V5_1,
     "v5_2": PROMPT_TEMPLATE_V5_2,
     "v5_3": PROMPT_TEMPLATE_V5_3,
+    "v5_4": PROMPT_TEMPLATE_V5_4,
+    "v5_5": PROMPT_TEMPLATE_V5_5,
+    "v5_6": PROMPT_TEMPLATE_V5_6,
+    "v5_7": PROMPT_TEMPLATE_V5_7,
+    "v5_8": PROMPT_TEMPLATE_V5_8,
+    "v6_1": PROMPT_TEMPLATE_V6_1,
+    "v6_2": PROMPT_TEMPLATE_V6_2,
+    "v6_3": PROMPT_TEMPLATE_V6_3,
+    "v6_4": PROMPT_TEMPLATE_V6_4,
+    "v6_5": PROMPT_TEMPLATE_V6_5
 }
 
 
