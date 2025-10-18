@@ -48,6 +48,19 @@ import re
 from typing import List, Optional, Dict, Any
 from functools import lru_cache
 
+# Import tokenizer for lexical metrics (matching reconstruction_evaluation.py)
+try:
+    from transformers import AutoTokenizer
+    _DEFAULT_TOKENIZER = AutoTokenizer.from_pretrained("bert-base-uncased")
+    _HAS_TOKENIZER = True
+except ImportError:
+    _DEFAULT_TOKENIZER = None
+    _HAS_TOKENIZER = False
+    warnings.warn(
+        "transformers not available. Lexical metrics will use regex fallback.",
+        RuntimeWarning
+    )
+
 # Try to import LLM judge client
 try:
     from ...utils_rl.llm_judge_client import LLMJudgeClient, get_default_client
@@ -132,10 +145,33 @@ def _get_client(server_url: Optional[str] = None, **kwargs) -> Optional[Any]:
     return _GLOBAL_CLIENT
 
 
-def _tokenize(text: str) -> List[str]:
-    """Tokenise text into a list of lowercase terms."""
-    tokens = re.findall(r'\b\w+\b', text.lower())
-    return tokens
+def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
+    """
+    Tokenise text into a list of tokens using BERT tokenizer.
+    
+    This matches the tokenization in reconstruction_evaluation.py for consistency.
+    Falls back to regex tokenization if BERT tokenizer is not available.
+    
+    Args:
+        text: Text to tokenize
+        max_tokens: Maximum tokens to return (for truncation)
+        
+    Returns:
+        List of tokens
+    """
+    if _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
+        # Use BERT tokenizer (same as reconstruction_evaluation.py)
+        return _DEFAULT_TOKENIZER.tokenize(
+            text,
+            max_length=max_tokens,
+            truncation=True,
+        )
+    else:
+        # Fallback to regex tokenization
+        tokens = re.findall(r'\b\w+\b', text.lower())
+        if max_tokens is not None and len(tokens) > max_tokens:
+            tokens = tokens[:max_tokens]
+        return tokens
 
 
 def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]:
@@ -145,31 +181,31 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
     This function computes metrics required by advanced prompt templates (e.g., v4_1)
     that incorporate lexical similarity information.
     
+    IMPORTANT: This implementation uses the SAME tokenizer and Jaccard calculation 
+    as reconstruction_evaluation.py to ensure consistency across the codebase.
+    Both use BERT's bert-base-uncased tokenizer for tokenization.
+    
     Args:
         reference: Ground truth solution
         candidate: Candidate solution to evaluate
         
     Returns:
         Dict with three metrics:
-        - lexical_token_overlap: Jaccard similarity (0-1)
+        - lexical_token_overlap: Jaccard similarity (0-1), computed identically to reconstruction_evaluation.py
         - lexical_lcs_ratio: Normalized LCS ratio (0-1), normalized by ground truth length
         - length_ratio: Token length ratio (candidate/reference)
     """
-    # Tokenize both texts
+    # Tokenize both texts (using BERT tokenizer to match reconstruction_evaluation.py)
     ref_tokens = _tokenize(reference)
     cand_tokens = _tokenize(candidate)
     
     # 1. Lexical token overlap (Jaccard similarity)
-    if not ref_tokens and not cand_tokens:
-        lexical_token_overlap = 1.0
-    elif not ref_tokens or not cand_tokens:
-        lexical_token_overlap = 0.0
-    else:
-        ref_set = set(ref_tokens)
-        cand_set = set(cand_tokens)
-        common = ref_set & cand_set
-        union = ref_set | cand_set
-        lexical_token_overlap = len(common) / len(union) if union else 0.0
+    # This matches the implementation in reconstruction_evaluation.py exactly
+    ref_set = set(ref_tokens)
+    cand_set = set(cand_tokens)
+    intersection = ref_set & cand_set
+    union = ref_set | cand_set
+    lexical_token_overlap = len(intersection) / len(union) if union else 0.0
     
     # 2. Lexical LCS ratio (normalized by ground truth length)
     if not ref_tokens or not cand_tokens:
