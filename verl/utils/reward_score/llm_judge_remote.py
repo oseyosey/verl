@@ -33,7 +33,7 @@ Usage example:
 Environment Variables:
 - LLM_JUDGE_SERVER_URL: URL of the vLLM server (e.g., http://localhost:8000)
 - LLM_JUDGE_SERVER_API_KEY: Optional API key for authentication
-- LLM_JUDGE_SERVER_TIMEOUT: Request timeout in seconds (default: 60)
+- LLM_JUDGE_SERVER_TIMEOUT: Request timeout in seconds (default: 600)
 
 To use this module, deploy a vLLM server with Qwen3-32B:
 python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-32B --port 8000
@@ -48,6 +48,9 @@ import re
 from typing import List, Optional, Dict, Any
 from functools import lru_cache
 
+import pdb
+
+
 # Import tokenizer for lexical metrics (matching reconstruction_evaluation.py)
 try:
     from transformers import AutoTokenizer
@@ -60,6 +63,22 @@ except ImportError:
         "transformers not available. Lexical metrics will use regex fallback.",
         RuntimeWarning
     )
+
+# Import n-gram coverage
+try:
+    from ...ddrl.utils_rl.ngram_coverage import compute_ngram_coverage
+    _HAS_NGRAM_COVERAGE = True
+except ImportError:
+    # Try alternative import paths
+    try:
+        from ddrl.utils_rl.ngram_coverage import compute_ngram_coverage
+        _HAS_NGRAM_COVERAGE = True
+    except ImportError:
+        _HAS_NGRAM_COVERAGE = False
+        warnings.warn(
+            "ngram_coverage not available. N-gram coverage metric will be skipped.",
+            RuntimeWarning
+        )
 
 # Try to import LLM judge client
 try:
@@ -190,10 +209,13 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
         candidate: Candidate solution to evaluate
         
     Returns:
-        Dict with three metrics:
+        Dict with six metrics:
         - lexical_token_overlap: Jaccard similarity (0-1), computed identically to reconstruction_evaluation.py
-        - lexical_lcs_ratio: Normalized LCS ratio (0-1), normalized by ground truth length
+        - lexical_lcs_ratio: Normalized LCS ratio (0-1), normalized by ground truth/reference length
+        - lexical_lcs_ratio_cand: Normalized LCS ratio (0-1), normalized by candidate length
         - length_ratio: Token length ratio (candidate/reference)
+        - lexical_ngram_coverage: N-gram coverage (0-1), normalized by candidate length
+        - lexical_ngram_coverage_ref: N-gram coverage (0-1), normalized by reference length
     """
     # Tokenize both texts (using BERT tokenizer to match reconstruction_evaluation.py)
     ref_tokens = _tokenize(reference)
@@ -207,9 +229,10 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
     union = ref_set | cand_set
     lexical_token_overlap = len(intersection) / len(union) if union else 0.0
     
-    # 2. Lexical LCS ratio (normalized by ground truth length)
+    # 2. Lexical LCS ratio (both normalizations)
     if not ref_tokens or not cand_tokens:
         lexical_lcs_ratio = 0.0
+        lexical_lcs_ratio_cand = 0.0
     else:
         # Compute LCS length using dynamic programming
         m, n = len(ref_tokens), len(cand_tokens)
@@ -225,6 +248,8 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
         lcs_length = dp[m][n]
         # Normalize by ground truth length (reference)
         lexical_lcs_ratio = lcs_length / len(ref_tokens)
+        # Normalize by candidate length
+        lexical_lcs_ratio_cand = lcs_length / len(cand_tokens)
     
     # 3. Length ratio (candidate / reference)
     if not ref_tokens:
@@ -232,10 +257,26 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
     else:
         length_ratio = len(cand_tokens) / len(ref_tokens)
     
+    # 4 & 5. N-gram coverage (both normalizations)
+    if _HAS_NGRAM_COVERAGE:
+        lexical_ngram_coverage = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="candidate")
+    else:
+        lexical_ngram_coverage = 0.0
+    
+    # 5. N-gram coverage (normalized by reference length)
+    if _HAS_NGRAM_COVERAGE:
+        lexical_ngram_coverage_ref = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="reference")
+    else:
+        lexical_ngram_coverage = 0.0
+        lexical_ngram_coverage_ref = 0.0
+    
     return {
         "lexical_token_overlap": lexical_token_overlap,
         "lexical_lcs_ratio": lexical_lcs_ratio,
-        "length_ratio": length_ratio
+        "lexical_lcs_ratio_cand": lexical_lcs_ratio_cand,
+        "length_ratio": length_ratio,
+        "lexical_ngram_coverage": lexical_ngram_coverage,
+        "lexical_ngram_coverage_ref": lexical_ngram_coverage_ref
     }
 
 
@@ -332,8 +373,11 @@ def _format_prompt(
     - {REFERENCE_SOLUTION}: Ground truth solution
     - {CANDIDATE_SOLUTION}: Candidate solution
     - {LEXICAL_TOKEN_OVERLAP}: Jaccard similarity metric (0-1)
-    - {LEXICAL_LCS_RATIO}: Normalized LCS ratio (0-1)
+    - {LEXICAL_LCS_RATIO}: Normalized LCS ratio (0-1), normalized by reference
+    - {LEXICAL_LCS_RATIO_CAND}: Normalized LCS ratio (0-1), normalized by candidate
     - {LENGTH_RATIO}: Length ratio (candidate/reference)
+    - {LEXICAL_NGRAM_COVERAGE}: N-gram coverage metric (0-1), normalized by candidate
+    - {LEXICAL_NGRAM_COVERAGE_REF}: N-gram coverage metric (0-1), normalized by reference
     
     Args:
         prompt_template: Template string with placeholders
@@ -357,7 +401,8 @@ def _format_prompt(
     # Check if template requires lexical metrics
     needs_metrics = any(
         placeholder in prompt_template
-        for placeholder in ["{LEXICAL_TOKEN_OVERLAP}", "{LEXICAL_LCS_RATIO}", "{LENGTH_RATIO}"]
+        for placeholder in ["{LEXICAL_TOKEN_OVERLAP}", "{LEXICAL_LCS_RATIO}", "{LEXICAL_LCS_RATIO_CAND}",
+                           "{LENGTH_RATIO}", "{LEXICAL_NGRAM_COVERAGE}", "{LEXICAL_NGRAM_COVERAGE_REF}"]
     )
     
     # Compute and add lexical metrics if needed
@@ -365,26 +410,36 @@ def _format_prompt(
         metrics = _compute_lexical_metrics(reference_solution, candidate_solution)
         format_dict["LEXICAL_TOKEN_OVERLAP"] = f"{metrics['lexical_token_overlap']:.3f}"
         format_dict["LEXICAL_LCS_RATIO"] = f"{metrics['lexical_lcs_ratio']:.3f}"
+        format_dict["LEXICAL_LCS_RATIO_CAND"] = f"{metrics['lexical_lcs_ratio_cand']:.3f}"
         format_dict["LENGTH_RATIO"] = f"{metrics['length_ratio']:.3f}"
+        format_dict["LEXICAL_NGRAM_COVERAGE"] = f"{metrics['lexical_ngram_coverage']:.3f}"
+        format_dict["LEXICAL_NGRAM_COVERAGE_REF"] = f"{metrics['lexical_ngram_coverage_ref']:.3f}"
     
     return prompt_template.format(**format_dict)
 
 
 def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
-    """Filter references (same as llm_judge.py)."""
+    """Filter references (same as llm_judge.py).
+    
+    BUG FIX: Previously used [r for r in refs if r in tgt] which only returned
+    refs that existed in BOTH the original refs AND target_gt. This caused issues
+    when target_gt contained references not in the original refs list.
+    
+    NEW BEHAVIOR: target_gt is now authoritative - we return exactly what's in
+    target_gt, not filtered by the original refs. This ensures all specified
+    target ground truths are used for LLM judge scoring.
+    """
     if not extra_info or not isinstance(extra_info, dict):
         return refs
     
-    # 1. Exact target string(s)
+    # 1. Exact target string(s) - target_gt is authoritative (returns target_gt directly)
     tgt = extra_info.get("target_gt")
     if isinstance(tgt, str):
-        subset = [r for r in refs if r == tgt]
-        if subset:
-            return subset
+        # Return the target string directly (not filtered by refs)
+        return [tgt]
     elif isinstance(tgt, list):
-        subset = [r for r in refs if r in tgt]
-        if subset:
-            return subset
+        # Return the target list directly (not filtered by refs)
+        return tgt
     
     # 2. Last prompt token heuristic
     if extra_info.get("filter_gt_by_prompt_token") and "prompt" in extra_info:
@@ -629,7 +684,7 @@ def compute_score(
     # Extract server configuration
     server_url = config.get("server_url")
     api_key = config.get("api_key")
-    timeout = float(config.get("timeout", os.getenv("LLM_JUDGE_SERVER_TIMEOUT", "180")))
+    timeout = float(config.get("timeout", os.getenv("LLM_JUDGE_SERVER_TIMEOUT", "600")))
     
     # Extract LLM configuration
     model_name = config.get("model_name", config.get("model", DEFAULT_MODEL_NAME))
