@@ -45,8 +45,9 @@ import os
 import warnings
 import logging
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pdb
 
@@ -109,6 +110,7 @@ DEFAULT_TOP_P = 0.8
 DEFAULT_MAX_NEW_TOKENS = 512
 DEFAULT_ENABLE_THINKING = False
 DEFAULT_BATCH_SIZE = 128  # Optimized for 8-GPU vLLM server with batch_size_per_worker
+DEFAULT_NUM_WORKERS = 16  # Number of parallel workers for lexical metrics computation
 
 # Import prompt templates
 try:
@@ -193,7 +195,7 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
         return tokens
 
 
-def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]:
+def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute: Optional[set] = None) -> Dict[str, float]:
     """
     Compute lexical metrics between reference and candidate solutions.
     
@@ -207,9 +209,13 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
     Args:
         reference: Ground truth solution
         candidate: Candidate solution to evaluate
+        metrics_to_compute: Set of metric names to compute. If None, computes all metrics.
+                           Valid names: 'lexical_token_overlap', 'lexical_lcs_ratio', 
+                           'lexical_lcs_ratio_cand', 'length_ratio', 'lexical_ngram_coverage',
+                           'lexical_ngram_coverage_ref'
         
     Returns:
-        Dict with six metrics:
+        Dict with requested metrics (subset of six possible metrics):
         - lexical_token_overlap: Jaccard similarity (0-1), computed identically to reconstruction_evaluation.py
         - lexical_lcs_ratio: Normalized LCS ratio (0-1), normalized by ground truth/reference length
         - lexical_lcs_ratio_cand: Normalized LCS ratio (0-1), normalized by candidate length
@@ -217,67 +223,83 @@ def _compute_lexical_metrics(reference: str, candidate: str) -> Dict[str, float]
         - lexical_ngram_coverage: N-gram coverage (0-1), normalized by candidate length
         - lexical_ngram_coverage_ref: N-gram coverage (0-1), normalized by reference length
     """
-    # Tokenize both texts (using BERT tokenizer to match reconstruction_evaluation.py)
-    ref_tokens = _tokenize(reference)
-    cand_tokens = _tokenize(candidate)
+    # If no specific metrics requested, compute all
+    if metrics_to_compute is None:
+        metrics_to_compute = {
+            'lexical_token_overlap', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand',
+            'length_ratio', 'lexical_ngram_coverage', 'lexical_ngram_coverage_ref'
+        }
+    
+    result = {}
+    
+    # Determine if we need tokenization (needed for most metrics)
+    needs_tokenization = any(m in metrics_to_compute for m in [
+        'lexical_token_overlap', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand', 'length_ratio'
+    ])
+    
+    if needs_tokenization:
+        # Tokenize both texts (using BERT tokenizer to match reconstruction_evaluation.py)
+        ref_tokens = _tokenize(reference)
+        cand_tokens = _tokenize(candidate)
     
     # 1. Lexical token overlap (Jaccard similarity)
-    # This matches the implementation in reconstruction_evaluation.py exactly
-    ref_set = set(ref_tokens)
-    cand_set = set(cand_tokens)
-    intersection = ref_set & cand_set
-    union = ref_set | cand_set
-    lexical_token_overlap = len(intersection) / len(union) if union else 0.0
+    if 'lexical_token_overlap' in metrics_to_compute:
+        # This matches the implementation in reconstruction_evaluation.py exactly
+        ref_set = set(ref_tokens)
+        cand_set = set(cand_tokens)
+        intersection = ref_set & cand_set
+        union = ref_set | cand_set
+        result['lexical_token_overlap'] = len(intersection) / len(union) if union else 0.0
     
     # 2. Lexical LCS ratio (both normalizations)
-    if not ref_tokens or not cand_tokens:
-        lexical_lcs_ratio = 0.0
-        lexical_lcs_ratio_cand = 0.0
-    else:
-        # Compute LCS length using dynamic programming
-        m, n = len(ref_tokens), len(cand_tokens)
-        dp = [[0] * (n + 1) for _ in range(m + 1)]
-        
-        for i in range(1, m + 1):
-            for j in range(1, n + 1):
-                if ref_tokens[i-1] == cand_tokens[j-1]:
-                    dp[i][j] = dp[i-1][j-1] + 1
-                else:
-                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
-        
-        lcs_length = dp[m][n]
-        # Normalize by ground truth length (reference)
-        lexical_lcs_ratio = lcs_length / len(ref_tokens)
-        # Normalize by candidate length
-        lexical_lcs_ratio_cand = lcs_length / len(cand_tokens)
+    if 'lexical_lcs_ratio' in metrics_to_compute or 'lexical_lcs_ratio_cand' in metrics_to_compute:
+        if not ref_tokens or not cand_tokens:
+            if 'lexical_lcs_ratio' in metrics_to_compute:
+                result['lexical_lcs_ratio'] = 0.0
+            if 'lexical_lcs_ratio_cand' in metrics_to_compute:
+                result['lexical_lcs_ratio_cand'] = 0.0
+        else:
+            # Compute LCS length using dynamic programming
+            m, n = len(ref_tokens), len(cand_tokens)
+            dp = [[0] * (n + 1) for _ in range(m + 1)]
+            
+            for i in range(1, m + 1):
+                for j in range(1, n + 1):
+                    if ref_tokens[i-1] == cand_tokens[j-1]:
+                        dp[i][j] = dp[i-1][j-1] + 1
+                    else:
+                        dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+            
+            lcs_length = dp[m][n]
+            # Normalize by ground truth length (reference)
+            if 'lexical_lcs_ratio' in metrics_to_compute:
+                result['lexical_lcs_ratio'] = lcs_length / len(ref_tokens)
+            # Normalize by candidate length
+            if 'lexical_lcs_ratio_cand' in metrics_to_compute:
+                result['lexical_lcs_ratio_cand'] = lcs_length / len(cand_tokens)
     
     # 3. Length ratio (candidate / reference)
-    if not ref_tokens:
-        length_ratio = 0.0 if cand_tokens else 1.0
-    else:
-        length_ratio = len(cand_tokens) / len(ref_tokens)
+    if 'length_ratio' in metrics_to_compute:
+        if not ref_tokens:
+            result['length_ratio'] = 0.0 if cand_tokens else 1.0
+        else:
+            result['length_ratio'] = len(cand_tokens) / len(ref_tokens)
     
-    # 4 & 5. N-gram coverage (both normalizations)
-    if _HAS_NGRAM_COVERAGE:
-        lexical_ngram_coverage = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="candidate")
-    else:
-        lexical_ngram_coverage = 0.0
+    # 4. N-gram coverage (normalized by candidate)
+    if 'lexical_ngram_coverage' in metrics_to_compute:
+        if _HAS_NGRAM_COVERAGE:
+            result['lexical_ngram_coverage'] = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="candidate")
+        else:
+            result['lexical_ngram_coverage'] = 0.0
     
     # 5. N-gram coverage (normalized by reference length)
-    if _HAS_NGRAM_COVERAGE:
-        lexical_ngram_coverage_ref = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="reference")
-    else:
-        lexical_ngram_coverage = 0.0
-        lexical_ngram_coverage_ref = 0.0
+    if 'lexical_ngram_coverage_ref' in metrics_to_compute:
+        if _HAS_NGRAM_COVERAGE:
+            result['lexical_ngram_coverage_ref'] = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="reference")
+        else:
+            result['lexical_ngram_coverage_ref'] = 0.0
     
-    return {
-        "lexical_token_overlap": lexical_token_overlap,
-        "lexical_lcs_ratio": lexical_lcs_ratio,
-        "lexical_lcs_ratio_cand": lexical_lcs_ratio_cand,
-        "length_ratio": length_ratio,
-        "lexical_ngram_coverage": lexical_ngram_coverage,
-        "lexical_ngram_coverage_ref": lexical_ngram_coverage_ref
-    }
+    return result
 
 
 # Removed lexical fallback - now returns 0.0 when server unavailable
@@ -398,24 +420,91 @@ def _format_prompt(
     if "{PROBLEM}" in prompt_template:
         format_dict["PROBLEM"] = problem.strip()
     
-    # Check if template requires lexical metrics
-    needs_metrics = any(
-        placeholder in prompt_template
-        for placeholder in ["{LEXICAL_TOKEN_OVERLAP}", "{LEXICAL_LCS_RATIO}", "{LEXICAL_LCS_RATIO_CAND}",
-                           "{LENGTH_RATIO}", "{LEXICAL_NGRAM_COVERAGE}", "{LEXICAL_NGRAM_COVERAGE_REF}"]
-    )
+    # Mapping from placeholder names to metric keys
+    placeholder_to_metric = {
+        "{LEXICAL_TOKEN_OVERLAP}": "lexical_token_overlap",
+        "{LEXICAL_LCS_RATIO}": "lexical_lcs_ratio",
+        "{LEXICAL_LCS_RATIO_CAND}": "lexical_lcs_ratio_cand",
+        "{LENGTH_RATIO}": "length_ratio",
+        "{LEXICAL_NGRAM_COVERAGE}": "lexical_ngram_coverage",
+        "{LEXICAL_NGRAM_COVERAGE_REF}": "lexical_ngram_coverage_ref"
+    }
     
-    # Compute and add lexical metrics if needed
-    if needs_metrics:
-        metrics = _compute_lexical_metrics(reference_solution, candidate_solution)
-        format_dict["LEXICAL_TOKEN_OVERLAP"] = f"{metrics['lexical_token_overlap']:.3f}"
-        format_dict["LEXICAL_LCS_RATIO"] = f"{metrics['lexical_lcs_ratio']:.3f}"
-        format_dict["LEXICAL_LCS_RATIO_CAND"] = f"{metrics['lexical_lcs_ratio_cand']:.3f}"
-        format_dict["LENGTH_RATIO"] = f"{metrics['length_ratio']:.3f}"
-        format_dict["LEXICAL_NGRAM_COVERAGE"] = f"{metrics['lexical_ngram_coverage']:.3f}"
-        format_dict["LEXICAL_NGRAM_COVERAGE_REF"] = f"{metrics['lexical_ngram_coverage_ref']:.3f}"
+    # Detect which specific metrics are needed
+    metrics_to_compute = set()
+    for placeholder, metric_key in placeholder_to_metric.items():
+        if placeholder in prompt_template:
+            metrics_to_compute.add(metric_key)
+    
+    # Compute and add only the needed lexical metrics
+    if metrics_to_compute:
+        metrics = _compute_lexical_metrics(reference_solution, candidate_solution, metrics_to_compute)
+        # Add computed metrics to format dict
+        for placeholder, metric_key in placeholder_to_metric.items():
+            if metric_key in metrics:
+                # Convert metric key to placeholder name (uppercase without underscores)
+                placeholder_name = placeholder[1:-1]  # Remove { and }
+                format_dict[placeholder_name] = f"{metrics[metric_key]:.3f}"
     
     return prompt_template.format(**format_dict)
+
+
+def _format_prompts_parallel(
+    prompt_template: str,
+    problems: List[str],
+    reference_solutions: List[str],
+    candidate_solutions: List[str],
+    num_workers: int = DEFAULT_NUM_WORKERS
+) -> List[str]:
+    """
+    Format multiple prompts in parallel for efficient batch processing.
+    
+    This function parallelizes the lexical metrics computation across multiple workers,
+    which is especially beneficial when computing expensive metrics like LCS or n-gram coverage.
+    
+    Args:
+        prompt_template: Template string with placeholders
+        problems: List of problem statements
+        reference_solutions: List of ground truth solutions
+        candidate_solutions: List of candidate solutions to evaluate
+        num_workers: Number of parallel workers (default: 4)
+        
+    Returns:
+        List of formatted prompt strings
+    """
+    # For small batches or when num_workers=1, use sequential processing
+    if len(problems) < num_workers * 2 or num_workers <= 1:
+        return [
+            _format_prompt(prompt_template, problem, ref, cand)
+            for problem, ref, cand in zip(problems, reference_solutions, candidate_solutions)
+        ]
+    
+    # Parallel processing for larger batches
+    formatted_prompts = [None] * len(problems)
+    
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        future_to_index = {}
+        for idx, (problem, ref, cand) in enumerate(zip(problems, reference_solutions, candidate_solutions)):
+            future = executor.submit(_format_prompt, prompt_template, problem, ref, cand)
+            future_to_index[future] = idx
+        
+        # Collect results in order
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            try:
+                formatted_prompts[idx] = future.result()
+            except Exception as e:
+                logger.error(f"Error formatting prompt at index {idx}: {e}")
+                # Fallback to sequential for this one
+                formatted_prompts[idx] = _format_prompt(
+                    prompt_template,
+                    problems[idx],
+                    reference_solutions[idx],
+                    candidate_solutions[idx]
+                )
+    
+    return formatted_prompts
 
 
 def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
@@ -516,12 +605,17 @@ def _batch_llm_judge_scores(
     top_p: float = DEFAULT_TOP_P,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    num_workers: int = DEFAULT_NUM_WORKERS,
     **generation_kwargs
 ) -> Optional[List[float]]:
     """
     Compute LLM judge scores for multiple solution-reference pairs efficiently.
     
-    This batches all prompts to the vLLM server for optimal throughput.
+    This batches all prompts to the vLLM server for optimal throughput and uses
+    parallel workers to compute lexical metrics for prompt formatting.
+    
+    Args:
+        num_workers: Number of parallel workers for lexical metrics computation (default: 4)
     
     Returns:
         List of scores if successful, None if remote server is unavailable or failed
@@ -531,11 +625,10 @@ def _batch_llm_judge_scores(
         return None
     
     try:
-        # Prepare all prompts
-        all_prompts = []
-        for solution, reference, problem in zip(solutions, references, problems):
-            formatted_prompt = _format_prompt(prompt_template, problem, reference, solution)
-            all_prompts.append(formatted_prompt)
+        # Prepare all prompts in parallel
+        all_prompts = _format_prompts_parallel(
+            prompt_template, problems, references, solutions, num_workers
+        )
         
         # Generate responses in batches
         all_responses = client.generate_responses(
@@ -591,6 +684,7 @@ def _best_similarity(
     top_p: float = DEFAULT_TOP_P,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    num_workers: int = DEFAULT_NUM_WORKERS,
     **generation_kwargs
 ) -> float:
     """Find best similarity among multiple references."""
@@ -601,12 +695,16 @@ def _best_similarity(
         logger.warning("Remote LLM judge client unavailable, returning 0.0")
         return 0.0
     
-    # For efficiency, batch all prompts
+    # For efficiency, batch all prompts and use parallel formatting
     try:
-        all_prompts = []
-        for ref in refs:
-            formatted_prompt = _format_prompt(prompt_template, problem, ref, sol)
-            all_prompts.append(formatted_prompt)
+        # Create lists for parallel formatting
+        problems = [problem] * len(refs)
+        solutions = [sol] * len(refs)
+        
+        # Format prompts in parallel
+        all_prompts = _format_prompts_parallel(
+            prompt_template, problems, refs, solutions, num_workers
+        )
         
         responses = client.generate_responses(
             prompts=all_prompts,
@@ -669,6 +767,8 @@ def compute_score(
     - enable_thinking: Whether to enable thinking mode (default: False)
     - problem: Problem statement for LLM judge prompt
     - prompt_template: Custom prompt template
+    - num_workers: Number of parallel workers for lexical metrics computation (default: 4)
+                    Set to 1 to disable parallelization
     """
 
     # Extract configuration from extra_info
@@ -708,6 +808,7 @@ def compute_score(
     top_p = float(config.get("top_p", DEFAULT_TOP_P))
     max_new_tokens = int(config.get("max_new_tokens", config.get("max_tokens", DEFAULT_MAX_NEW_TOKENS)))
     batch_size = int(config.get("batch_size", DEFAULT_BATCH_SIZE))
+    num_workers = int(config.get("num_workers", DEFAULT_NUM_WORKERS))
     
     # Get or create client
     client = _get_client(server_url=server_url, api_key=api_key, timeout=timeout)
@@ -766,7 +867,7 @@ def compute_score(
                 scores = _batch_llm_judge_scores(
                     all_solutions, all_references, all_problems, client,
                     model_name, prompt_template, enable_thinking,
-                    temperature, top_p, max_new_tokens, batch_size
+                    temperature, top_p, max_new_tokens, batch_size, num_workers
                 )
                 
                 if scores is not None:
@@ -790,7 +891,7 @@ def compute_score(
                 best_score = _best_similarity(
                     sol, gts_flat, client, problem,
                     model_name, prompt_template, enable_thinking,
-                    temperature, top_p, max_new_tokens, batch_size
+                    temperature, top_p, max_new_tokens, batch_size, num_workers
                 )
                 result_scores.append(best_score)
             
@@ -828,7 +929,7 @@ def compute_score(
                 scores = _batch_llm_judge_scores(
                     all_solutions, all_references, all_problems, client,
                     model_name, prompt_template, enable_thinking,
-                    temperature, top_p, max_new_tokens, batch_size
+                    temperature, top_p, max_new_tokens, batch_size, num_workers
                 )
                 
                 if scores is not None:
@@ -857,7 +958,7 @@ def compute_score(
             res.append(_best_similarity(
                 sol, refs, client, sample_problem,
                 model_name, prompt_template, enable_thinking,
-                temperature, top_p, max_new_tokens, batch_size
+                temperature, top_p, max_new_tokens, batch_size, num_workers
             ))
         return res
     
@@ -874,7 +975,7 @@ def compute_score(
     return _best_similarity(
         str(solution_str), refs, client, problem,
         model_name, prompt_template, enable_thinking,
-        temperature, top_p, max_new_tokens, batch_size
+        temperature, top_p, max_new_tokens, batch_size, num_workers
     )
 
 
