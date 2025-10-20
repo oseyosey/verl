@@ -62,8 +62,8 @@ def run_ppo(config) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
-@ray.remote(num_cpus=1)  # no dedicated GPU - ISSUE for embedding model reward
-                         # please make sure main_task is not scheduled on head
+@ray.remote(num_cpus=32)  # Allocate 32 CPUs for parallel reward computation
+                          # Increased from 1 to enable ProcessPoolExecutor parallelism for lexical rewards
 class TaskRunner:
     def run(self, config):
         # Print the initial configuration. `resolve=True` will evaluate symbolic values.
