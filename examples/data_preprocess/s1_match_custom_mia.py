@@ -85,6 +85,11 @@ def transform_example(
     # Assistant prefix parameters
     enable_assistant_prefix: bool = False,
     assistant_prefix_ratio: float = 0.25,
+    # Lexical metric parameters
+    lexical_metric_profile: str = "default",
+    lexical_custom_weights: List[float] = None,
+    lexical_num_workers: int = 32,
+    lexical_show_progress: bool = True,
 ):
     """Convert s1K-1.1 record into verl RL parquet compatible format.
 
@@ -118,6 +123,41 @@ def transform_example(
         "index": idx,
         "metric": metric,
     }
+    
+    # Add lexical-specific configuration
+    if match_type == "lexical":
+        # For lexical matching, use metric_profile instead of old metric system
+        extra_info["metric_profile"] = lexical_metric_profile
+        
+        # Add custom weights if provided
+        if lexical_custom_weights is not None:
+            extra_info["custom_weights"] = lexical_custom_weights
+        
+        # Add number of workers for parallel processing
+        extra_info["num_workers"] = lexical_num_workers
+        
+        # Add progress tracking flag
+        extra_info["show_progress"] = lexical_show_progress
+        
+        # Map legacy metric names to new metric profiles for backward compatibility
+        legacy_mapping = {
+            "bm25": "default",
+            "ratio": "default",
+            "token_ratio": "default",
+            "ordered_token": "default",
+            "levenshtein": "default"
+        }
+        
+        if metric in legacy_mapping and lexical_metric_profile == "default":
+            # Override with legacy mapping only if user didn't explicitly set metric_profile
+            extra_info["metric_profile"] = legacy_mapping[metric]
+            if verbose and idx == 0:
+                print(f"[transform_example] Mapped legacy metric '{metric}' to metric_profile '{legacy_mapping[metric]}'")
+        
+        if verbose and idx == 0:
+            print(f"[transform_example] Lexical configuration: metric_profile='{extra_info['metric_profile']}', num_workers={lexical_num_workers}")
+            if lexical_custom_weights:
+                print(f"[transform_example] Using custom weights: {lexical_custom_weights}")
     
     # Preserve is_member flag if present in the example
     if "is_member" in example:
@@ -882,7 +922,37 @@ def main():
     parser.add_argument(
         "--metric",
         default="bm25",
-        help="Similarity metric to store in extra_info (e.g. bm25, ratio, levenshtein, embedding).",
+        help="Similarity metric to store in extra_info (e.g. bm25, ratio, levenshtein, embedding). For lexical matching, this will be converted to appropriate metric_profile.",
+    )
+    parser.add_argument(
+        "--lexical_metric_profile",
+        default="default",
+        help=(
+            "Metric profile for lexical matching. Options: "
+            "'default' (average of token_overlap, lcs_ratio_cand, ngram_coverage), "
+            "'lexical_token_overlap', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand', "
+            "'length_ratio', 'lexical_ngram_coverage', 'lexical_ngram_coverage_ref', "
+            "'comprehensive' (all metrics weighted). "
+            "Only used when --match_type is 'lexical'."
+        ),
+    )
+    parser.add_argument(
+        "--lexical_custom_weights",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Custom weights for lexical metrics when using a metric profile. Number of weights must match the number of metrics in the selected profile.",
+    )
+    parser.add_argument(
+        "--lexical_num_workers",
+        type=int,
+        default=32,
+        help="Number of parallel workers for lexical metrics computation (default: 32). Set to 1 to disable parallelization.",
+    )
+    parser.add_argument(
+        "--lexical_show_progress",
+        action="store_true",
+        help="Show progress bar and throughput metrics during lexical reward computation (useful for monitoring performance during training).",
     )
     parser.add_argument(
         "--include_target_gt",
@@ -1233,6 +1303,10 @@ def main():
             transformed_solution=transformed_sol,
             enable_assistant_prefix=args.enable_assistant_prefix,
             assistant_prefix_ratio=args.assistant_prefix_ratio,
+            lexical_metric_profile=args.lexical_metric_profile,
+            lexical_custom_weights=args.lexical_custom_weights,
+            lexical_num_workers=args.lexical_num_workers,
+            lexical_show_progress=args.lexical_show_progress,
         )
     
     transform_fn = transform_with_transformed

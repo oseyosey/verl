@@ -144,21 +144,29 @@ def default_compute_score(
         )
     elif data_source.startswith("lexical_match"):
         
-        # Generic lexical similarity reward based on BM25 / Levenshtein, etc.
+        # Generic lexical similarity reward with flexible metric profiles
         from . import lexical
-        # Allow callers to override the lexical metric via ``extra_info``.  For
-        # backward-compatibility we keep the old behaviour (default to BM25)
-        # when nothing is specified.
-        metric_from_extra = None
-        if isinstance(extra_info, dict):
-            metric_from_extra = extra_info.get("metric") or extra_info.get("lexical_metric")
+        
+        # The metric_profile is now configured in extra_info during data preprocessing
+        # For backward compatibility, map old 'metric' to 'metric_profile' if needed
+        if isinstance(extra_info, dict) and "metric_profile" not in extra_info:
+            legacy_metric = extra_info.get("metric") or extra_info.get("lexical_metric")
+            if legacy_metric:
+                # Map legacy metric names to new profiles
+                legacy_mapping = {
+                    "bm25": "default",
+                    "ratio": "default",
+                    "token_ratio": "default",
+                    "ordered_token": "default",
+                    "levenshtein": "default"
+                }
+                extra_info["metric_profile"] = legacy_mapping.get(legacy_metric, "default")
 
         res = lexical.compute_score(
             data_source=data_source,
             solution_str=solution_str,
             ground_truth=ground_truth,
             extra_info=extra_info,
-            metric=metric_from_extra or "levenshtein",
         )
     elif data_source.startswith("llm_judge_remote"):
         # Remote LLM-as-a-judge reward using vLLM server to evaluate similarity
@@ -250,6 +258,14 @@ def _default_compute_score_batched(
         elif data_source.startswith("embedding_remote"):
             from . import embedding_remote
             return embedding_remote.compute_score(
+                data_sources=data_sources,
+                solution_strs=solution_strs,
+                ground_truths=ground_truths,
+                extra_infos=extra_infos,
+            )
+        elif data_source.startswith("lexical_match"):
+            from . import lexical
+            return lexical.compute_score(
                 data_sources=data_sources,
                 solution_strs=solution_strs,
                 ground_truths=ground_truths,
