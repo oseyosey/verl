@@ -78,7 +78,7 @@ class Role(Enum):
 
 @dataclass
 class ResourcePoolManager:
-    """
+    """r
     Define a resource pool specification. Resource pool will be initialized first.
     """
 

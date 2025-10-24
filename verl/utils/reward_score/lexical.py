@@ -18,6 +18,7 @@ Key features
   - ``lexical_ngram_coverage_ref``: N-gram coverage normalized by reference (0-1)
 * **Flexible metric selection** via ``metric_profile`` parameter
 * **Weighted aggregation** of multiple metrics with configurable weights
+* **Length penalty** support to discourage outputs that are too short or too long
 * **Concurrent processing** support for efficient batch evaluation
 * **BERT tokenization** for consistency with other modules
 * **Extensible** design allows custom metric profiles
@@ -109,6 +110,10 @@ __all__: List[str] = [
 
 DEFAULT_NUM_WORKERS = 32  # Number of parallel workers for batch processing
 
+# Default length penalty configuration (same as embedding_remote.py)
+DEFAULT_LENGTH_PENALTY_TYPE = "none"
+DEFAULT_LENGTH_THRESHOLD = 1.5
+
 # -----------------------------------------------------------------------------
 # Metric profiles configuration
 # -----------------------------------------------------------------------------
@@ -116,9 +121,58 @@ DEFAULT_NUM_WORKERS = 32  # Number of parallel workers for batch processing
 # Default metric profiles with weights
 METRIC_PROFILES = {
     # Default profile: average of 3 key metrics with equal weights
-    "default": {
+    "duo_v1_ratio_penalty_1.25": {
+        "metrics": ["lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.25
+    },
+    "duo_v2_ratio_penalty_1.25": {
+        "metrics": ["lexical_lcs_ratio", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.25
+    },
+    "duo_v2_quadratic_penalty_1.25": {
+        "metrics": ["lexical_lcs_ratio", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0],
+        "length_penalty_type": "quadratic",
+        "length_threshold": 1.25
+    },
+    "trio_v1": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
         "weights": [1.0, 1.0, 1.0]
+    },
+    # Option A: Reference-normalized metrics (recommended to avoid short-sentence bias)
+    "trio_v2": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0]
+    },
+    # Option B: Original metrics with length penalty
+    "trio_v1_ratio_penalty_1.25": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",  # Options: none, ratio, sqrt, log, quadratic, exponential
+        "length_threshold": 1.25  # Threshold for length penalty (default: 1.25)
+    },
+    # Trio v2 with length penalty for extra safety
+    "trio_v2_ratio_penalty_1.25": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.25
+    },
+    "trio_v3_ratio_penalty_1.25": {
+        "metrics": ["length_ratio", "lexical_lcs_ratio", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.25
+    },
+    # Comprehensive profile using all metrics
+    "comprehensive": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_lcs_ratio_cand", 
+                   "length_ratio", "lexical_ngram_coverage", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0, 0.5, 1.0, 1.0]  # Lower weight for length_ratio
     },
     # Individual metrics (for backward compatibility and specific use cases)
     "lexical_token_overlap": {
@@ -144,12 +198,6 @@ METRIC_PROFILES = {
     "lexical_ngram_coverage_ref": {
         "metrics": ["lexical_ngram_coverage_ref"],
         "weights": [1.0]
-    },
-    # Comprehensive profile using all metrics
-    "comprehensive": {
-        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_lcs_ratio_cand", 
-                   "length_ratio", "lexical_ngram_coverage", "lexical_ngram_coverage_ref"],
-        "weights": [1.0, 1.0, 1.0, 0.5, 1.0, 1.0]  # Lower weight for length_ratio
     },
     # Legacy compatibility mappings
     "token_ratio": {
@@ -295,12 +343,79 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
     return result
 
 
-def _aggregate_metrics(metrics: Dict[str, float], profile: Dict[str, Any]) -> float:
+def _compute_length_penalty(
+    reference: str, 
+    candidate: str,
+    penalty_type: str = "none",
+    threshold: float = 1.5
+) -> float:
+    """
+    Compute length penalty factor (same as embedding_remote.py).
+    Returns a value between 0 and 1, where 1 means no penalty.
+    
+    Args:
+        reference: Ground truth text
+        candidate: Candidate text to evaluate
+        penalty_type: Type of penalty to apply. Options:
+            - "none": No penalty (default)
+            - "ratio": Linear penalty based on length ratio
+            - "sqrt": Square root penalty (softer)
+            - "log": Logarithmic penalty (softest)
+            - "quadratic": Quadratic penalty (harsher)
+            - "exponential": Exponential penalty (harshest)
+        threshold: Length ratio threshold (default: 1.5)
+            If candidate length is outside [ref_len/threshold, ref_len*threshold], penalty applies
+    
+    Returns:
+        Penalty factor between 0 and 1
+    """
+    ref_len = len(reference.split())
+    cand_len = len(candidate.split())
+    
+    # Calculate both ratios to handle both longer and shorter outputs
+    if ref_len == 0:
+        return 1.0 if cand_len == 0 else 0.0
+    
+    ratio_short = cand_len / ref_len  # < 1/threshold means too short
+    ratio_long = ref_len / cand_len if cand_len > 0 else 0.0   # < 1/threshold means too long
+    
+    # No penalty if output length is within acceptable range
+    if ratio_short >= 1/threshold and ratio_short <= threshold:
+        return 1.0
+    
+    # Use the more extreme ratio for penalty calculation
+    ratio = min(ratio_long, ratio_short)
+    
+    if penalty_type == "none":
+        return 1.0
+    elif penalty_type == "ratio":
+        return min(1.0, ratio)
+    elif penalty_type == "sqrt":
+        return min(1.0, ratio ** 0.5)
+    elif penalty_type == "log":
+        return min(1.0, math.log(1 + min(ref_len, cand_len)) / math.log(1 + max(ref_len, cand_len)))
+    elif penalty_type == "quadratic":
+        return min(1.0, ratio ** 2)
+    elif penalty_type == "exponential":
+        return min(1.0, math.exp(-(1 - ratio)))
+    else:
+        warnings.warn(f"Unknown length penalty type: {penalty_type}, using 'none'")
+        return 1.0
+
+
+def _aggregate_metrics(
+    metrics: Dict[str, float], 
+    profile: Dict[str, Any], 
+    reference: Optional[str] = None,
+    candidate: Optional[str] = None
+) -> float:
     """Aggregate multiple metrics using weighted average.
     
     Args:
         metrics: Dictionary of computed metric values
         profile: Metric profile containing 'metrics' list and 'weights' list
+        reference: Ground truth text (optional, needed for length penalty)
+        candidate: Candidate text (optional, needed for length penalty)
         
     Returns:
         Weighted average score in [0, 1]
@@ -327,7 +442,17 @@ def _aggregate_metrics(metrics: Dict[str, float], profile: Dict[str, Any]) -> fl
     if total_weight == 0:
         return 0.0
     
-    return weighted_sum / total_weight
+    # Compute base score
+    base_score = weighted_sum / total_weight
+    
+    # Apply length penalty if configured and we have the necessary texts
+    length_penalty_type = profile.get("length_penalty_type", "none")
+    if length_penalty_type != "none" and reference is not None and candidate is not None:
+        length_threshold = profile.get("length_threshold", DEFAULT_LENGTH_THRESHOLD)
+        penalty = _compute_length_penalty(reference, candidate, length_penalty_type, length_threshold)
+        return base_score * penalty
+    
+    return base_score
 
 
 def _compute_score_single(reference: str, candidate: str, profile: Dict[str, Any]) -> float:
@@ -344,7 +469,7 @@ def _compute_score_single(reference: str, candidate: str, profile: Dict[str, Any
         Similarity score in [0, 1]
     """
     metrics = _compute_lexical_metrics(reference, candidate, set(profile["metrics"]))
-    return _aggregate_metrics(metrics, profile)
+    return _aggregate_metrics(metrics, profile, reference, candidate)
 
 
 def _compute_scores_parallel(
@@ -517,11 +642,16 @@ def compute_score(
         - prompt: Prompt text for token filtering
         - metric_profile: Override the metric_profile parameter
         - custom_weights: List of weights for the selected metrics
+        - length_penalty_type: Override length penalty type ("none", "ratio", "sqrt", "log", "quadratic", "exponential")
+        - length_threshold: Override length threshold (float, default: 1.5)
         - num_workers: Number of parallel workers for batch processing (default: 32)
         - show_progress: Boolean to show progress bar with throughput metrics (default: False)
     metric_profile
         The metric profile to use. Available options:
-        - **default**: Average of token_overlap, lcs_ratio_cand, ngram_coverage
+        - **default**: Average of token_overlap, lcs_ratio_cand, ngram_coverage (may favor short outputs)
+        - **trio_v2**: Average of token_overlap, lcs_ratio, ngram_coverage_ref (reference-normalized, recommended)
+        - **default_with_length_penalty**: Default metrics with ratio-based length penalty
+        - **trio_v2_with_length_penalty**: Trio v2 metrics with ratio-based length penalty
         - **lexical_token_overlap**: Jaccard similarity only
         - **lexical_lcs_ratio**: LCS normalized by reference only
         - **lexical_lcs_ratio_cand**: LCS normalized by candidate only
@@ -577,6 +707,12 @@ def compute_score(
                 f"metrics length {len(profile['metrics'])}. Using default weights.",
                 RuntimeWarning
             )
+    
+    # Allow length penalty configuration overrides
+    if "length_penalty_type" in config:
+        profile["length_penalty_type"] = config["length_penalty_type"]
+    if "length_threshold" in config:
+        profile["length_threshold"] = float(config["length_threshold"])
     
     # Get num_workers and show_progress from config
     num_workers = int(config.get("num_workers", DEFAULT_NUM_WORKERS))
@@ -721,7 +857,7 @@ def compute_score(
 
     for ref in refs:
         metrics = _compute_lexical_metrics(ref, solution_str, metrics_to_compute)
-        score = _aggregate_metrics(metrics, profile)
+        score = _aggregate_metrics(metrics, profile, ref, solution_str)
         best_score = max(best_score, score)
         if best_score >= 1.0:
             break
