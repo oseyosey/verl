@@ -771,9 +771,14 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
             
             # Update all matching entries with the combined target_gt
             # Also store separate member/non-member ground truths for MIA evaluation
+            # IMPORTANT: Preserve MIA weights if present
             for member_idx in member_indices:
                 member_ex = updated_member_data[member_idx]
                 original_member_gt = member_ex["reward_model"]["ground_truth"]
+                
+                # Preserve existing MIA weight fields if they exist
+                mia_weight = member_ex["extra_info"].get("mia_weight")
+                mia_weight_tag = member_ex["extra_info"].get("mia_weight_tag")
                 
                 updated_member_data[member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
                 # Store separate ground truths for MIA evaluation
@@ -785,10 +790,20 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
                     updated_member_data[member_idx]["extra_info"]["has_nonmember_gt"] = True
                 else:
                     updated_member_data[member_idx]["extra_info"]["has_nonmember_gt"] = False
+                
+                # Restore MIA weights if they existed
+                if mia_weight is not None:
+                    updated_member_data[member_idx]["extra_info"]["mia_weight"] = mia_weight
+                if mia_weight_tag is not None:
+                    updated_member_data[member_idx]["extra_info"]["mia_weight_tag"] = mia_weight_tag
             
             for non_member_idx in non_member_indices:
                 non_member_ex = updated_non_member_data[non_member_idx]
                 original_nonmember_gt = non_member_ex["reward_model"]["ground_truth"]
+                
+                # Preserve existing MIA weight fields if they exist
+                mia_weight = non_member_ex["extra_info"].get("mia_weight")
+                mia_weight_tag = non_member_ex["extra_info"].get("mia_weight_tag")
                 
                 updated_non_member_data[non_member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
                 # Store separate ground truths for MIA evaluation  
@@ -800,6 +815,12 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
                     updated_non_member_data[non_member_idx]["extra_info"]["has_nonmember_gt"] = True
                 else:
                     updated_non_member_data[non_member_idx]["extra_info"]["has_nonmember_gt"] = False
+                
+                # Restore MIA weights if they existed
+                if mia_weight is not None:
+                    updated_non_member_data[non_member_idx]["extra_info"]["mia_weight"] = mia_weight
+                if mia_weight_tag is not None:
+                    updated_non_member_data[non_member_idx]["extra_info"]["mia_weight_tag"] = mia_weight_tag
     
     if verbose:
         if matches_found > 0:
@@ -868,6 +889,74 @@ def _write_jsonl(path: str, rows: List[dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def load_and_normalize_mia_weights(
+    members_path: str,
+    nonmembers_path: str,
+    verbose: bool = False
+) -> Tuple[List[float], List[float]]:
+    """
+    Load MIA weights from JSONL files and normalize them together.
+    
+    Args:
+        members_path: Path to members JSONL file with 'idx', 'id', and 'score' fields
+        nonmembers_path: Path to non-members JSONL file with 'idx', 'id', and 'score' fields
+        verbose: Whether to print debug information
+        
+    Returns:
+        Tuple of (normalized_member_weights, normalized_nonmember_weights)
+        Both lists are in order of 'idx' field (0, 1, 2, ...)
+    """
+    import numpy as np
+    
+    # Load member weights
+    member_scores = []
+    with open(members_path, "r", encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            member_scores.append((obj["idx"], obj["score"]))
+    
+    # Load non-member weights
+    nonmember_scores = []
+    with open(nonmembers_path, "r", encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            nonmember_scores.append((obj["idx"], obj["score"]))
+    
+    # Sort by idx to ensure correct order
+    member_scores.sort(key=lambda x: x[0])
+    nonmember_scores.sort(key=lambda x: x[0])
+    
+    # Extract scores
+    member_weights = [score for _, score in member_scores]
+    nonmember_weights = [score for _, score in nonmember_scores]
+    
+    # Combine all weights for normalization
+    all_weights = np.array(member_weights + nonmember_weights)
+    
+    # Normalize to [0, 1] using min-max normalization
+    min_weight = np.min(all_weights)
+    max_weight = np.max(all_weights)
+    
+    if max_weight > min_weight:
+        normalized_all = (all_weights - min_weight) / (max_weight - min_weight)
+    else:
+        # All weights are the same, set to 0.5
+        normalized_all = np.full_like(all_weights, 0.5)
+    
+    # Split back into members and non-members
+    normalized_member_weights = normalized_all[:len(member_weights)].tolist()
+    normalized_nonmember_weights = normalized_all[len(member_weights):].tolist()
+    
+    if verbose:
+        print(f"[load_and_normalize_mia_weights] Loaded {len(member_weights)} member weights and {len(nonmember_weights)} non-member weights")
+        print(f"[load_and_normalize_mia_weights] Original range: [{min_weight:.4f}, {max_weight:.4f}]")
+        print(f"[load_and_normalize_mia_weights] Normalized range: [0.0, 1.0]")
+        print(f"[load_and_normalize_mia_weights] Member weights stats: mean={np.mean(normalized_member_weights):.4f}, std={np.std(normalized_member_weights):.4f}")
+        print(f"[load_and_normalize_mia_weights] Non-member weights stats: mean={np.mean(normalized_nonmember_weights):.4f}, std={np.std(normalized_nonmember_weights):.4f}")
+    
+    return normalized_member_weights, normalized_nonmember_weights
 
 
 def main():
@@ -1150,12 +1239,43 @@ def main():
         action="store_true",
         help="Enable verbose logging for debugging the preprocessing pipeline.",
     )
+    parser.add_argument(
+        "--mia_weights_members",
+        default=None,
+        help="Path to JSONL file containing MIA weights for member examples (e.g., min_k++_members.jsonl).",
+    )
+    parser.add_argument(
+        "--mia_weights_nonmembers",
+        default=None,
+        help="Path to JSONL file containing MIA weights for non-member examples (e.g., min_k++_nonmembers.jsonl).",
+    )
+    parser.add_argument(
+        "--mia_weights_tag",
+        choices=["loss", "loss_ref", "min_k", "min_k++"],
+        default=None,
+        help="Tag identifying the type of MIA weights (loss, loss_ref, min_k, or min_k++). Required when MIA weight files are provided.",
+    )
 
     args = parser.parse_args()
 
     # Handle thinking mode logic
     if args.no_llm_thinking:
         args.llm_thinking_enabled = False
+    
+    # Validate MIA weights arguments
+    if args.mia_weights_members or args.mia_weights_nonmembers:
+        if not (args.mia_weights_members and args.mia_weights_nonmembers):
+            raise ValueError("Both --mia_weights_members and --mia_weights_nonmembers must be provided together")
+        if not args.mia_weights_tag:
+            raise ValueError("--mia_weights_tag is required when MIA weight files are provided")
+        if not args.mia:
+            raise ValueError("--mia flag must be enabled when using MIA weights")
+        
+        # Check that files exist
+        if not os.path.exists(args.mia_weights_members):
+            raise FileNotFoundError(f"MIA weights file not found: {args.mia_weights_members}")
+        if not os.path.exists(args.mia_weights_nonmembers):
+            raise FileNotFoundError(f"MIA weights file not found: {args.mia_weights_nonmembers}")
     
     # Load dataset
     ds_full = datasets.load_dataset(args.dataset_path, split=args.dataset_split)
@@ -1384,6 +1504,50 @@ def main():
         if args.verbose:
             print(f"[main] Non-member data created: {len(ds_non_members)} records")
         
+        # Load and apply MIA weights if provided
+        if args.mia_weights_members and args.mia_weights_nonmembers:
+            print(f"\n=== Loading MIA weights ({args.mia_weights_tag}) ===")
+            normalized_member_weights, normalized_nonmember_weights = load_and_normalize_mia_weights(
+                args.mia_weights_members,
+                args.mia_weights_nonmembers,
+                verbose=args.verbose
+            )
+            
+            # Verify that the number of weights matches the number of examples
+            if len(normalized_member_weights) != len(ds_members):
+                raise ValueError(
+                    f"Number of member weights ({len(normalized_member_weights)}) does not match "
+                    f"number of member examples ({len(ds_members)})"
+                )
+            if len(normalized_nonmember_weights) != len(ds_non_members):
+                raise ValueError(
+                    f"Number of non-member weights ({len(normalized_nonmember_weights)}) does not match "
+                    f"number of non-member examples ({len(ds_non_members)})"
+                )
+            
+            # Add weights to extra_info for members
+            def add_mia_weight_member(example, idx):
+                new_example = dict(example)
+                if "extra_info" in new_example and isinstance(new_example["extra_info"], dict):
+                    new_example["extra_info"] = dict(new_example["extra_info"])
+                    new_example["extra_info"]["mia_weight"] = normalized_member_weights[idx]
+                    new_example["extra_info"]["mia_weight_tag"] = args.mia_weights_tag
+                return new_example
+            
+            # Add weights to extra_info for non-members
+            def add_mia_weight_nonmember(example, idx):
+                new_example = dict(example)
+                if "extra_info" in new_example and isinstance(new_example["extra_info"], dict):
+                    new_example["extra_info"] = dict(new_example["extra_info"])
+                    new_example["extra_info"]["mia_weight"] = normalized_nonmember_weights[idx]
+                    new_example["extra_info"]["mia_weight_tag"] = args.mia_weights_tag
+                return new_example
+            
+            ds_members = ds_members.map(add_mia_weight_member, with_indices=True)
+            ds_non_members = ds_non_members.map(add_mia_weight_nonmember, with_indices=True)
+            
+            print(f"✅ Added MIA weights ({args.mia_weights_tag}) to {len(ds_members)} members and {len(ds_non_members)} non-members")
+        
         # Handle target_gt updates and deduplication if include_target_gt is True
         if args.include_target_gt and args.mia_nonmember_method in ["random_pairing", "perturbed_solution"]:
             print("Checking for matching problems between member and non-member data...")
@@ -1463,6 +1627,19 @@ def main():
         
         # Shuffle the combined dataset
         ds_transformed = ds_combined.shuffle(seed=args.subset_seed)
+        
+        # Verify MIA weights are preserved after all processing
+        if args.mia_weights_members and args.mia_weights_nonmembers:
+            weights_found = 0
+            for i in range(min(5, len(ds_transformed))):  # Check first 5 examples
+                if "extra_info" in ds_transformed[i] and isinstance(ds_transformed[i]["extra_info"], dict):
+                    if "mia_weight" in ds_transformed[i]["extra_info"]:
+                        weights_found += 1
+            
+            if weights_found > 0:
+                print(f"✅ Verified: MIA weights preserved in final dataset (checked {weights_found}/5 examples)")
+            else:
+                print(f"⚠️  WARNING: MIA weights NOT found in final dataset! Check processing pipeline.")
         
         if args.verbose:
             if args.include_target_gt and args.mia_nonmember_method in ["random_pairing", "perturbed_solution"]:
