@@ -771,13 +771,13 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
             
             # Update all matching entries with the combined target_gt
             # Also store separate member/non-member ground truths for MIA evaluation
-            # IMPORTANT: Preserve MIA weights if present
+            # IMPORTANT: Preserve MIA weights if present and store both member and non-member weights
             for member_idx in member_indices:
                 member_ex = updated_member_data[member_idx]
                 original_member_gt = member_ex["reward_model"]["ground_truth"]
                 
                 # Preserve existing MIA weight fields if they exist
-                mia_weight = member_ex["extra_info"].get("mia_weight")
+                member_mia_weight = member_ex["extra_info"].get("mia_weight")
                 mia_weight_tag = member_ex["extra_info"].get("mia_weight_tag")
                 
                 updated_member_data[member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
@@ -791,18 +791,20 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
                 else:
                     updated_member_data[member_idx]["extra_info"]["has_nonmember_gt"] = False
                 
-                # Restore MIA weights if they existed
-                if mia_weight is not None:
-                    updated_member_data[member_idx]["extra_info"]["mia_weight"] = mia_weight
+                # Store both member and non-member MIA weights for later use
+                if member_mia_weight is not None:
+                    updated_member_data[member_idx]["extra_info"]["member_mia_weight"] = member_mia_weight
                 if mia_weight_tag is not None:
                     updated_member_data[member_idx]["extra_info"]["mia_weight_tag"] = mia_weight_tag
             
+            # Collect non-member MIA weights to store in member examples
+            nonmember_mia_weights = []
             for non_member_idx in non_member_indices:
                 non_member_ex = updated_non_member_data[non_member_idx]
                 original_nonmember_gt = non_member_ex["reward_model"]["ground_truth"]
                 
                 # Preserve existing MIA weight fields if they exist
-                mia_weight = non_member_ex["extra_info"].get("mia_weight")
+                nonmember_mia_weight = non_member_ex["extra_info"].get("mia_weight")
                 mia_weight_tag = non_member_ex["extra_info"].get("mia_weight_tag")
                 
                 updated_non_member_data[non_member_idx]["extra_info"]["target_gt"] = unique_solutions.copy()
@@ -817,10 +819,19 @@ def update_target_gt_for_matching_problems(member_data, non_member_data, verbose
                     updated_non_member_data[non_member_idx]["extra_info"]["has_nonmember_gt"] = False
                 
                 # Restore MIA weights if they existed
-                if mia_weight is not None:
-                    updated_non_member_data[non_member_idx]["extra_info"]["mia_weight"] = mia_weight
+                if nonmember_mia_weight is not None:
+                    updated_non_member_data[non_member_idx]["extra_info"]["mia_weight"] = nonmember_mia_weight
                 if mia_weight_tag is not None:
                     updated_non_member_data[non_member_idx]["extra_info"]["mia_weight_tag"] = mia_weight_tag
+                
+                # Collect non-member MIA weight for storage in member examples
+                nonmember_mia_weights.append(nonmember_mia_weight)
+            
+            # Store non-member MIA weights in member examples (for cases where non-members get removed)
+            if nonmember_mia_weights and len(nonmember_mia_weights) == len(member_indices):
+                for i, member_idx in enumerate(member_indices):
+                    if nonmember_mia_weights[i] is not None:
+                        updated_member_data[member_idx]["extra_info"]["nonmember_mia_weight"] = nonmember_mia_weights[i]
     
     if verbose:
         if matches_found > 0:
