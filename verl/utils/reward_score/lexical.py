@@ -19,9 +19,17 @@ Key features
 * **Flexible metric selection** via ``metric_profile`` parameter
 * **Weighted aggregation** of multiple metrics with configurable weights
 * **Length penalty** support to discourage outputs that are too short or too long
+* **MIA weighting** support to apply membership inference weights during RL training
 * **Concurrent processing** support for efficient batch evaluation
 * **BERT tokenization** for consistency with other modules
 * **Extensible** design allows custom metric profiles
+
+MIA Weighting
+~~~~~~~~~~~~~
+The module supports MIA (Membership Inference Attack) weighting for RL training:
+- Configure via ``use_mia_weighting`` and ``mia_invert_weights`` in metric profiles
+- Handles both simple mode (``mia_weight``) and complex mode (``member_mia_weight``, ``nonmember_mia_weight``)
+- Weights are extracted from ``extra_info`` and applied to final scores
 
 Example
 ~~~~~~~
@@ -42,6 +50,16 @@ Example
 ...     metric_profile="lexical_token_overlap"
 ... )
 0.428...
+
+>>> # Using MIA-weighted profile
+>>> compute_score(
+...     data_source="dummy",
+...     solution_str="Cats are great pets.",
+...     ground_truth="Cats make wonderful companions.",
+...     extra_info={"mia_weight": 0.8},
+...     metric_profile="duo_v2_ratio_penalty_1.25_mia"
+... )
+0.666...
 """
 
 import pdb  # * Hacky way to debug the verl codebase (ray cluster)
@@ -155,6 +173,12 @@ METRIC_PROFILES = {
         "length_penalty_type": "ratio",  # Options: none, ratio, sqrt, log, quadratic, exponential
         "length_threshold": 1.25  # Threshold for length penalty (default: 1.25)
     },
+    "trio_v1_quadratic_penalty_1.25": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "quadratic",  # Options: none, ratio, sqrt, log, quadratic, exponential
+        "length_threshold": 1.25  # Threshold for length penalty (default: 1.25)
+    },
     # Trio v2 with length penalty for extra safety
     "trio_v2_ratio_penalty_1.25": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_ngram_coverage"],
@@ -207,7 +231,16 @@ METRIC_PROFILES = {
     "ordered_token": {
         "metrics": ["lexical_lcs_ratio"],
         "weights": [1.0]
-    }
+    },
+    # MIA-weighted profiles (examples)
+    "trio_v1_ratio_penalty_1.25_mia": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.25,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,  # Lower MIA score = more likely member = higher weight
+    },
 }
 
 # -----------------------------------------------------------------------------
@@ -568,6 +601,53 @@ def _compute_scores_parallel(
     return scores
 
 # -----------------------------------------------------------------------------
+# Utility: Extract MIA weight from extra_info
+# -----------------------------------------------------------------------------
+
+
+def _extract_mia_weight(ref: str, extra_info: dict | None) -> Optional[float]:
+    """Extract MIA weight for a specific reference from extra_info.
+    
+    Handles two modes:
+    1. Simple mode (unused_examples): Single mia_weight field applies to all references
+    2. Complex mode (perturbed_solution): Separate member_mia_weight and nonmember_mia_weight
+       based on which ground truth (member_ground_truth or nonmember_ground_truth) matches
+    
+    Args:
+        ref: The reference string being evaluated
+        extra_info: Extra information dict containing MIA weight fields
+        
+    Returns:
+        MIA weight (float in [0, 1]) or None if not available
+    """
+    if not extra_info or not isinstance(extra_info, dict):
+        return None
+    
+    # Simple mode: Single mia_weight field (unused_examples mode)
+    if "mia_weight" in extra_info:
+        return float(extra_info["mia_weight"])
+    
+    # Complex mode: Separate weights for member and non-member ground truths (perturbed_solution mode)
+    # Check if we have the necessary fields
+    has_member_fields = "member_ground_truth" in extra_info and "member_mia_weight" in extra_info
+    has_nonmember_fields = "nonmember_ground_truth" in extra_info and "nonmember_mia_weight" in extra_info
+    
+    if has_member_fields or has_nonmember_fields:
+        # Match reference to ground truth and return corresponding weight
+        if has_member_fields:
+            member_gt = extra_info["member_ground_truth"]
+            if ref == member_gt:
+                return float(extra_info["member_mia_weight"])
+        
+        if has_nonmember_fields:
+            nonmember_gt = extra_info["nonmember_ground_truth"]
+            if ref == nonmember_gt:
+                return float(extra_info["nonmember_mia_weight"])
+    
+    return None
+
+
+# -----------------------------------------------------------------------------
 # Utility: filter reference list based on *extra_info*
 # -----------------------------------------------------------------------------
 
@@ -646,6 +726,11 @@ def compute_score(
         - length_threshold: Override length threshold (float, default: 1.5)
         - num_workers: Number of parallel workers for batch processing (default: 32)
         - show_progress: Boolean to show progress bar with throughput metrics (default: False)
+        - mia_weight: MIA weight for simple mode (unused_examples) in [0, 1]
+        - member_mia_weight: MIA weight for member ground truth (perturbed_solution mode)
+        - nonmember_mia_weight: MIA weight for non-member ground truth (perturbed_solution mode)
+        - member_ground_truth: Member ground truth string (perturbed_solution mode)
+        - nonmember_ground_truth: Non-member ground truth string (perturbed_solution mode)
     metric_profile
         The metric profile to use. Available options:
         - **default**: Average of token_overlap, lcs_ratio_cand, ngram_coverage (may favor short outputs)
@@ -660,11 +745,16 @@ def compute_score(
         - **lexical_ngram_coverage_ref**: N-gram coverage by reference only
         - **comprehensive**: All metrics with weighted average
         - Legacy names supported: **token_ratio**, **ordered_token**
+        
+        MIA weighting can be configured in metric profiles:
+        - **use_mia_weighting**: Boolean to enable MIA weighting (default: False)
+        - **mia_invert_weights**: Boolean to invert weights (1 - weight) (default: False)
 
     Returns
     -------
     float
         A value in the range [0, 1] – higher means more similar.
+        When MIA weighting is enabled, the score is multiplied by the MIA weight.
     """
 
     # Extract configuration from extra_info
@@ -752,6 +842,7 @@ def compute_score(
             all_candidates = []
             all_references = []
             pair_indices = []  # Track which solution each pair belongs to
+            pair_refs = []  # Track which ref string each pair uses (for MIA weights)
             
             for sol_idx, (sol, gt) in enumerate(zip(sols, gts)):
                 refs = [gt] if isinstance(gt, str) else list(gt or [])
@@ -765,6 +856,7 @@ def compute_score(
                     all_candidates.append(sol)
                     all_references.append(ref)
                     pair_indices.append((sol_idx, len(all_candidates) - 1))
+                    pair_refs.append(ref)
             
             # Compute all scores in parallel
             if all_candidates:
@@ -773,6 +865,21 @@ def compute_score(
                     show_progress=show_progress,
                     desc=f"Lexical rewards ({len(sols)} samples, {len(all_candidates)} pairs)"
                 )
+                
+                # Apply MIA weighting if configured
+                if profile.get("use_mia_weighting", False):
+                    for i in range(len(all_scores)):
+                        # Get the extra_info for this sample
+                        sol_idx = pair_indices[i][0]
+                        ei = defaults[sol_idx] if sol_idx < len(defaults) else None
+                        
+                        # Extract and apply MIA weight
+                        mia_weight = _extract_mia_weight(pair_refs[i], ei)
+                        if mia_weight is not None:
+                            # Optionally invert weight
+                            if profile.get("mia_invert_weights", False):
+                                mia_weight = 1.0 - mia_weight
+                            all_scores[i] = all_scores[i] * mia_weight
                 
                 # Group scores by solution and take maximum
                 results = []
@@ -795,6 +902,7 @@ def compute_score(
         all_candidates = []
         all_references = []
         pair_indices = []  # Track which solution each pair belongs to
+        pair_refs = []  # Track which ref string each pair uses (for MIA weights)
         empty_solutions = set()  # Track solutions with no valid references
         
         for sol_idx, (sol, gt, ei) in enumerate(zip(sols, gts, defaults)):
@@ -811,6 +919,7 @@ def compute_score(
                 all_candidates.append(sol)
                 all_references.append(ref)
                 pair_indices.append(sol_idx)
+                pair_refs.append(ref)
         
         # Batch process all filtered pairs in parallel
         if all_candidates:
@@ -819,6 +928,21 @@ def compute_score(
                 show_progress=show_progress,
                 desc=f"Lexical rewards (filtered, {len(sols)} samples, {len(all_candidates)} pairs)"
             )
+            
+            # Apply MIA weighting if configured
+            if profile.get("use_mia_weighting", False):
+                for i in range(len(all_scores)):
+                    # Get the extra_info for this sample
+                    sol_idx = pair_indices[i]
+                    ei = defaults[sol_idx] if sol_idx < len(defaults) else None
+                    
+                    # Extract and apply MIA weight
+                    mia_weight = _extract_mia_weight(pair_refs[i], ei)
+                    if mia_weight is not None:
+                        # Optionally invert weight
+                        if profile.get("mia_invert_weights", False):
+                            mia_weight = 1.0 - mia_weight
+                        all_scores[i] = all_scores[i] * mia_weight
             
             # Group scores by solution and take maximum
             results = []
@@ -853,14 +977,26 @@ def compute_score(
 
     # Compute best score across all references
     best_score = 0.0
+    best_ref = None
     metrics_to_compute = set(profile["metrics"])
 
     for ref in refs:
         metrics = _compute_lexical_metrics(ref, solution_str, metrics_to_compute)
         score = _aggregate_metrics(metrics, profile, ref, solution_str)
-        best_score = max(best_score, score)
+        if score > best_score:
+            best_score = score
+            best_ref = ref
         if best_score >= 1.0:
             break
+    
+    # Apply MIA weighting if configured
+    if profile.get("use_mia_weighting", False) and best_ref is not None:
+        mia_weight = _extract_mia_weight(best_ref, extra_info)
+        if mia_weight is not None:
+            # Optionally invert weight (lower MIA score = more likely member)
+            if profile.get("mia_invert_weights", False):
+                mia_weight = 1.0 - mia_weight
+            best_score = best_score * mia_weight
     
     return best_score
 
