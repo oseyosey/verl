@@ -45,6 +45,15 @@ Usage:
   
   # Reverse member and non-member labels (for testing MIA robustness)
   python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --reverse_member
+  
+  # Target GT augmentation with random sampling (adds 1 additional solution to each target_gt)
+  python math500_match_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method random --augment_num_samples 1
+  
+  # Target GT augmentation with embedding similarity (top-2 most similar solutions)
+  python math500_match_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method embedding --augment_num_samples 2
+  
+  # Target GT augmentation with lexical similarity (top-3 most similar by Jaccard)
+  python math500_match_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method lexical --augment_num_samples 3
 """
 
 import argparse
@@ -97,6 +106,8 @@ def transform_example(
     lexical_custom_weights: List[float] = None,
     lexical_num_workers: int = 32,
     lexical_show_progress: bool = True,
+    # Augmentation parameters
+    augmented_solutions: List[str] = None,
 ):
     """Convert MATH-500 record into verl RL parquet compatible format.
 
@@ -179,11 +190,26 @@ def transform_example(
     # Optionally include the ground-truth answer as a dedicated target reference
     # for reward functions that support the 'target_gt' hint.
     if include_target_gt:
-        if verbose and idx == 0:
-            print(
-                f"[transform_example] Added target_gt for first example: {str(example['solution']).strip()[:100]}..."
-            )
-        extra_info["target_gt"] = str(example["solution"]).strip()
+        base_solution = str(example["solution"]).strip()
+        
+        # Check if we have augmented solutions
+        if augmented_solutions is not None and len(augmented_solutions) > 0:
+            # Create list with original solution + augmented solutions
+            extra_info["target_gt"] = [base_solution] + augmented_solutions
+            if verbose and idx == 0:
+                print(
+                    f"[transform_example] Added augmented target_gt for first example:"
+                )
+                print(f"  - Original solution: {base_solution[:100]}...")
+                print(f"  - Added {len(augmented_solutions)} additional solution(s)")
+                for i, aug_sol in enumerate(augmented_solutions[:2]):  # Show first 2
+                    print(f"    [{i+1}] {aug_sol[:100]}...")
+        else:
+            extra_info["target_gt"] = base_solution
+            if verbose and idx == 0:
+                print(
+                    f"[transform_example] Added target_gt for first example: {base_solution[:100]}..."
+                )
 
     # Preserve optional assistant prefix if upstream pipeline inserted one.
     if "assistant_prefix" in example:
@@ -970,6 +996,221 @@ def load_and_normalize_mia_weights(
     return normalized_member_weights, normalized_nonmember_weights
 
 
+def compute_lexical_similarities(query_solution: str, candidate_solutions: List[str]) -> List[float]:
+    """Compute Jaccard similarity between query solution and candidates.
+    
+    Uses Qwen3-8B tokenizer which can handle long sequences (32k+ tokens) without
+    truncation warnings.
+    
+    Args:
+        query_solution: The query solution text
+        candidate_solutions: List of candidate solution texts
+        
+    Returns:
+        List of Jaccard similarity scores [0, 1]
+    """
+    from transformers import AutoTokenizer
+    
+    # Use Qwen3-8B tokenizer - handles long sequences without warnings
+    # and provides better tokenization than simple regex
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-7B-Instruct")
+    
+    # Tokenize query (no truncation, no max_length)
+    query_tokens = set(tokenizer.tokenize(query_solution))
+    
+    # Compute similarity for each candidate
+    similarities = []
+    for cand in candidate_solutions:
+        cand_tokens = set(tokenizer.tokenize(cand))
+        
+        # Jaccard similarity
+        intersection = query_tokens & cand_tokens
+        union = query_tokens | cand_tokens
+        similarity = len(intersection) / len(union) if union else 0.0
+        similarities.append(similarity)
+    
+    return similarities
+
+
+# Global cache for embedding model to avoid reloading
+_EMBEDDING_MODEL_CACHE = {}
+
+
+def _get_embedding_model():
+    """Get or load the embedding model (cached for efficiency).
+    
+    Returns:
+        SentenceTransformer model instance
+    """
+    if "model" in _EMBEDDING_MODEL_CACHE:
+        return _EMBEDDING_MODEL_CACHE["model"]
+    
+    try:
+        from sentence_transformers import SentenceTransformer
+        import torch
+    except ImportError as e:
+        raise ImportError(f"sentence-transformers is required for embedding similarity: {e}")
+    
+    # Load Qwen3-8B model once and cache it
+    model_name = "Qwen/Qwen3-Embedding-8B"
+    
+    try:
+        if torch.cuda.is_available():
+            n_gpus = torch.cuda.device_count()
+            embedding_device = 0
+            print(f"Loading {model_name} on cuda:{embedding_device} (cached for reuse)...")
+            
+            model = SentenceTransformer(
+                model_name,
+                model_kwargs={
+                    "attn_implementation": "flash_attention_2",
+                    "device_map": {"": f"cuda:{embedding_device}"},
+                    "torch_dtype": torch.float16
+                },
+                tokenizer_kwargs={"padding_side": "left"},
+            )
+        else:
+            print(f"Loading {model_name} on CPU (cached for reuse)...")
+            model = SentenceTransformer(model_name)
+    except Exception as e:
+        print(f"Warning: Failed to load with optimizations: {e}. Using basic loading.")
+        model = SentenceTransformer(model_name)
+    
+    # Cache the model
+    _EMBEDDING_MODEL_CACHE["model"] = model
+    return model
+
+
+def _clear_embedding_model_cache():
+    """Clear the embedding model cache and free GPU memory."""
+    if "model" in _EMBEDDING_MODEL_CACHE:
+        try:
+            import torch
+            import gc
+            
+            # Delete model
+            del _EMBEDDING_MODEL_CACHE["model"]
+            
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            print("✓ Cleared embedding model cache and freed GPU memory")
+        except Exception as e:
+            print(f"Warning: Failed to clear cache: {e}")
+
+
+def compute_embedding_similarities(query_solution: str, candidate_solutions: List[str]) -> List[float]:
+    """Compute cosine similarity using Qwen3-8B embeddings.
+    
+    Uses a cached model instance to avoid reloading the model for every call.
+    
+    Args:
+        query_solution: The query solution text
+        candidate_solutions: List of candidate solution texts
+        
+    Returns:
+        List of cosine similarity scores [0, 1]
+    """
+    import numpy as np
+    
+    # Get cached model (loads once, reuses thereafter)
+    model = _get_embedding_model()
+    
+    # Encode all texts
+    all_texts = [query_solution] + candidate_solutions
+    embeddings = model.encode(
+        all_texts,
+        batch_size=32,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+        convert_to_numpy=True
+    )
+    
+    # Split embeddings
+    query_emb = embeddings[0]
+    cand_embs = embeddings[1:]
+    
+    # Compute cosine similarities (already normalized, so just dot product)
+    similarities = cand_embs @ query_emb
+    
+    # Map from [-1, 1] to [0, 1]
+    similarities = (similarities + 1.0) / 2.0
+    
+    return similarities.tolist()
+
+
+def sample_additional_solutions(
+    current_solution: str,
+    current_idx: int,
+    all_solutions: List[str],
+    all_indices: List[Tuple],
+    method: str,
+    num_samples: int,
+    seed: int = 42
+) -> List[str]:
+    """Sample additional solutions from the pool, excluding current example.
+    
+    Args:
+        current_solution: Solution from the current example
+        current_idx: Index of current example in the pool
+        all_solutions: Pool of all solutions (from members + non-members)
+        all_indices: Corresponding indices as tuples (type, idx)
+        method: "random", "embedding", or "lexical"
+        num_samples: Number of solutions to sample
+        seed: Random seed for reproducibility
+        
+    Returns:
+        List of sampled solution strings
+    """
+    # Filter out current example
+    candidate_solutions = []
+    candidate_indices = []
+    
+    for i, (sol, idx_tuple) in enumerate(zip(all_solutions, all_indices)):
+        if i != current_idx:
+            candidate_solutions.append(sol)
+            candidate_indices.append(i)
+    
+    # Check if we have enough candidates
+    if len(candidate_solutions) == 0:
+        return []
+    
+    num_samples = min(num_samples, len(candidate_solutions))
+    
+    if method == "random":
+        # Random sampling
+        rng = random.Random(seed + current_idx)  # Use different seed for each example
+        sampled_indices = rng.sample(range(len(candidate_solutions)), num_samples)
+        sampled_solutions = [candidate_solutions[i] for i in sampled_indices]
+        
+    elif method == "embedding":
+        # Embedding-based sampling (top-k most similar)
+        similarities = compute_embedding_similarities(current_solution, candidate_solutions)
+        
+        # Get indices of top-k most similar
+        sorted_indices = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)
+        top_k_indices = sorted_indices[:num_samples]
+        sampled_solutions = [candidate_solutions[i] for i in top_k_indices]
+        
+    elif method == "lexical":
+        # Lexical-based sampling (top-k most similar by Jaccard)
+        similarities = compute_lexical_similarities(current_solution, candidate_solutions)
+        
+        # Get indices of top-k most similar
+        sorted_indices = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)
+        top_k_indices = sorted_indices[:num_samples]
+        sampled_solutions = [candidate_solutions[i] for i in top_k_indices]
+        
+    else:
+        raise ValueError(f"Unknown sampling method: {method}")
+    
+    return sampled_solutions
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -1266,12 +1507,38 @@ def main():
         default=None,
         help="Tag identifying the type of MIA weights (loss, loss_ref, min_k, or min_k++). Required when MIA weight files are provided.",
     )
+    parser.add_argument(
+        "--augment_target_gt",
+        action="store_true",
+        help="Augment target_gt with additional solutions from other examples in the MIA subset (requires --mia and --include_target_gt).",
+    )
+    parser.add_argument(
+        "--augment_sampling_method",
+        choices=["random", "embedding", "lexical"],
+        default="random",
+        help="Method for sampling additional solutions: random, embedding (Qwen3-8B similarity), or lexical (Jaccard similarity) (default: random).",
+    )
+    parser.add_argument(
+        "--augment_num_samples",
+        type=int,
+        default=1,
+        help="Number of additional solutions to sample and add to target_gt (default: 1).",
+    )
 
     args = parser.parse_args()
 
     # Handle thinking mode logic
     if args.no_llm_thinking:
         args.llm_thinking_enabled = False
+    
+    # Validate augmentation arguments
+    if args.augment_target_gt:
+        if not args.mia:
+            raise ValueError("--augment_target_gt requires --mia to be enabled")
+        if not args.include_target_gt:
+            raise ValueError("--augment_target_gt requires --include_target_gt to be enabled")
+        if args.augment_num_samples < 1:
+            raise ValueError("--augment_num_samples must be at least 1")
     
     # Validate MIA weights arguments
     if args.mia_weights_members or args.mia_weights_nonmembers:
@@ -1364,7 +1631,7 @@ def main():
         for new_idx, orig_idx in enumerate(sampled_indices):
             idx_to_original[new_idx] = orig_idx
     
-    def transform_with_transformed(example, idx):
+    def transform_with_transformed(example, idx, augmented_solutions=None):
         transformed_sol = None
         if ds_transformed is not None:
             # Get the original index - check multiple sources:
@@ -1414,6 +1681,7 @@ def main():
             lexical_custom_weights=args.lexical_custom_weights,
             lexical_num_workers=args.lexical_num_workers,
             lexical_show_progress=args.lexical_show_progress,
+            augmented_solutions=augmented_solutions,
         )
     
     transform_fn = transform_with_transformed
@@ -1428,9 +1696,6 @@ def main():
         
         # Add is_member field to member examples before transformation
         ds_members_with_flag = ds_members_subset.map(add_member_flag, with_indices=True)
-        ds_members = ds_members_with_flag.map(transform_fn, with_indices=True, remove_columns=ds_members_with_flag.column_names)
-        if args.verbose:
-            print(f"[main] Member data created: {len(ds_members)} records")
         
         # Create non-member data using selected method
         if args.mia_nonmember_method == "random_pairing":
@@ -1510,8 +1775,90 @@ def main():
         else:
             raise ValueError(f"Unknown non-member method: {args.mia_nonmember_method}")
         
+        # Prepare augmentation mapping if enabled
+        augmentation_map = {}
+        if args.augment_target_gt:
+            print(f"\n=== Target GT Augmentation ===")
+            print(f"Sampling method: {args.augment_sampling_method}")
+            print(f"Number of samples per example: {args.augment_num_samples}")
+            
+            # Collect all solutions from members and non-members
+            all_solutions = []
+            all_indices = []
+            
+            # Add member solutions
+            for i in range(len(ds_members_subset)):
+                all_solutions.append(str(ds_members_subset[i]["solution"]).strip())
+                all_indices.append(("member", i))
+            
+            # Add non-member solutions
+            for i, ex in enumerate(non_member_examples):
+                all_solutions.append(str(ex["solution"]).strip())
+                all_indices.append(("non_member", i))
+            
+            print(f"Total solution pool size: {len(all_solutions)} (members + non-members)")
+            
+            # Sample additional solutions for each member
+            for i in range(len(ds_members_subset)):
+                current_solution = all_solutions[i]
+                sampled = sample_additional_solutions(
+                    current_solution=current_solution,
+                    current_idx=i,
+                    all_solutions=all_solutions,
+                    all_indices=all_indices,
+                    method=args.augment_sampling_method,
+                    num_samples=args.augment_num_samples,
+                    seed=args.subset_seed
+                )
+                if sampled:
+                    augmentation_map[("member", i)] = sampled
+            
+            # Sample additional solutions for each non-member
+            for i in range(len(non_member_examples)):
+                current_solution = all_solutions[len(ds_members_subset) + i]
+                pool_idx = len(ds_members_subset) + i
+                sampled = sample_additional_solutions(
+                    current_solution=current_solution,
+                    current_idx=pool_idx,
+                    all_solutions=all_solutions,
+                    all_indices=all_indices,
+                    method=args.augment_sampling_method,
+                    num_samples=args.augment_num_samples,
+                    seed=args.subset_seed
+                )
+                if sampled:
+                    augmentation_map[("non_member", i)] = sampled
+            
+            print(f"✅ Augmented {len(augmentation_map)} examples with additional solutions")
+            
+            # Show example augmentation for first member
+            if ("member", 0) in augmentation_map and args.verbose:
+                print(f"\nExample augmentation (member 0):")
+                print(f"  Original solution: {all_solutions[0][:100]}...")
+                for idx, aug_sol in enumerate(augmentation_map[("member", 0)][:2]):
+                    print(f"  Additional solution {idx+1}: {aug_sol[:100]}...")
+            
+            # Clear embedding model cache if it was used
+            if args.augment_sampling_method == "embedding":
+                _clear_embedding_model_cache()
+        
+        # Transform member data with augmentation
+        def transform_member_with_aug(example, idx):
+            aug_sols = augmentation_map.get(("member", idx), None) if augmentation_map else None
+            return transform_with_transformed(example, idx, augmented_solutions=aug_sols)
+        
+        # Transform non-member data with augmentation
+        def transform_nonmember_with_aug(example, idx):
+            aug_sols = augmentation_map.get(("non_member", idx), None) if augmentation_map else None
+            return transform_with_transformed(example, idx, augmented_solutions=aug_sols)
+        
+        # Apply transformations
+        ds_members = ds_members_with_flag.map(transform_member_with_aug, with_indices=True, remove_columns=ds_members_with_flag.column_names)
+        if args.verbose:
+            print(f"[main] Member data created: {len(ds_members)} records")
+        
         ds_non_members_raw = datasets.Dataset.from_list(non_member_examples)
-        ds_non_members = ds_non_members_raw.map(transform_fn, with_indices=True, remove_columns=ds_non_members_raw.column_names)
+        ds_non_members = ds_non_members_raw.map(transform_nonmember_with_aug, with_indices=True, remove_columns=ds_non_members_raw.column_names)
         if args.verbose:
             print(f"[main] Non-member data created: {len(ds_non_members)} records")
         

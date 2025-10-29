@@ -21,7 +21,7 @@ Key features
 * **Length penalty** support to discourage outputs that are too short or too long
 * **MIA weighting** support to apply membership inference weights during RL training
 * **Concurrent processing** support for efficient batch evaluation
-* **BERT tokenization** for consistency with other modules
+* **Qwen2.5-Math tokenization** for long sequence support (32k+ tokens) and math text optimization
 * **Extensible** design allows custom metric profiles
 
 MIA Weighting
@@ -80,10 +80,10 @@ try:
 except ImportError:
     _HAS_TQDM = False
 
-# Import tokenizer for consistency with llm_judge_remote.py
+# Import tokenizer - using Qwen2.5-Math for long sequence support (32k+ tokens)
 try:
     from transformers import AutoTokenizer
-    _DEFAULT_TOKENIZER = AutoTokenizer.from_pretrained("bert-base-uncased")
+    _DEFAULT_TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-7B-Instruct")
     _HAS_TOKENIZER = True
 except ImportError:
     _DEFAULT_TOKENIZER = None
@@ -248,10 +248,11 @@ METRIC_PROFILES = {
 # -----------------------------------------------------------------------------
 
 def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
-    """Tokenise text into a list of tokens using BERT tokenizer.
+    """Tokenise text into a list of tokens using Qwen2.5-Math tokenizer.
     
-    This matches the tokenization in llm_judge_remote.py for consistency.
-    Falls back to regex tokenization if BERT tokenizer is not available.
+    Uses Qwen2.5-Math-7B-Instruct tokenizer which supports long sequences (32k+ tokens)
+    and is optimized for mathematical text. Falls back to regex tokenization if the
+    tokenizer is not available.
     
     Args:
         text: Text to tokenize
@@ -261,7 +262,7 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
         List of tokens
     """
     if _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-        # Use BERT tokenizer (same as llm_judge_remote.py)
+        # Use Qwen2.5-Math tokenizer for long sequence support
         return _DEFAULT_TOKENIZER.tokenize(
             text,
             max_length=max_tokens,
