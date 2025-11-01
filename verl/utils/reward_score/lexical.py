@@ -9,8 +9,9 @@ expected by verl's reward loading utilities.
 
 Key features
 ------------
-* **Six lexical metrics** available:
+* **Seven lexical metrics** available:
   - ``lexical_token_overlap``: Jaccard similarity (0-1)
+  - ``lexical_token_overlap_ref``: Token overlap normalized by reference (0-1)
   - ``lexical_lcs_ratio``: Normalized LCS ratio by reference length (0-1)
   - ``lexical_lcs_ratio_cand``: Normalized LCS ratio by candidate length (0-1)
   - ``length_ratio``: Token length ratio (candidate/reference)
@@ -126,7 +127,7 @@ __all__: List[str] = [
 # Configuration
 # -----------------------------------------------------------------------------
 
-DEFAULT_NUM_WORKERS = 32  # Number of parallel workers for batch processing
+DEFAULT_NUM_WORKERS = 48  # Number of parallel workers for batch processing
 
 # Default length penalty configuration (same as embedding_remote.py)
 DEFAULT_LENGTH_PENALTY_TYPE = "none"
@@ -166,6 +167,19 @@ METRIC_PROFILES = {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_ngram_coverage"],
         "weights": [1.0, 1.0, 1.0]
     },
+    #* V3 are normalized by reference only, avoid reward hacking toward shorter solutions"
+    "duo_v3": {
+        "metrics": ["lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0]
+    },
+    "trio_v3": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0]
+    },
+    "duo_v4": {
+        "metrics": ["lexical_lcs_ratio", "lexical_token_overlap_ref"],
+        "weights": [1.0, 1.0]
+    },  
     # Option B: Original metrics with length penalty
     "trio_v1_ratio_penalty_1.25": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
@@ -186,11 +200,17 @@ METRIC_PROFILES = {
         "length_penalty_type": "ratio",
         "length_threshold": 1.25
     },
-    "trio_v3_ratio_penalty_1.25": {
-        "metrics": ["length_ratio", "lexical_lcs_ratio", "lexical_ngram_coverage"],
+    "trio_v3_ratio_penalty_1.50": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
-        "length_threshold": 1.25
+        "length_threshold": 1.50
+    },
+    "duo_v4_ratio_penalty_1.50": {
+        "metrics": ["lexical_lcs_ratio", "lexical_token_overlap_ref"],
+        "weights": [1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50
     },
     # Comprehensive profile using all metrics
     "comprehensive": {
@@ -201,6 +221,10 @@ METRIC_PROFILES = {
     # Individual metrics (for backward compatibility and specific use cases)
     "lexical_token_overlap": {
         "metrics": ["lexical_token_overlap"],
+        "weights": [1.0]
+    },
+    "lexical_token_overlap_ref": {
+        "metrics": ["lexical_token_overlap_ref"],
         "weights": [1.0]
     },
     "lexical_lcs_ratio": {
@@ -248,11 +272,13 @@ METRIC_PROFILES = {
 # -----------------------------------------------------------------------------
 
 def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
-    """Tokenise text into a list of tokens using Qwen2.5-Math tokenizer.
+    """Tokenize text into larger semantic units for memorization detection.
     
-    Uses Qwen2.5-Math-7B-Instruct tokenizer which supports long sequences (32k+ tokens)
-    and is optimized for mathematical text. Falls back to regex tokenization if the
-    tokenizer is not available.
+    Uses whitespace-based splitting with minimal punctuation stripping to preserve
+    larger chunks (better signal for reconstruction/memorization metrics).
+    
+    Backup: If environment variable `DDRL_USE_TRANSFORMERS_TOKENIZER` is set to a
+    truthy value and the transformers tokenizer is available, use it instead.
     
     Args:
         text: Text to tokenize
@@ -261,38 +287,54 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
     Returns:
         List of tokens
     """
-    if _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-        # Use Qwen2.5-Math tokenizer for long sequence support
+    try:
+        import os
+        use_transformers = os.environ.get("DDRL_USE_TRANSFORMERS_TOKENIZER", "").strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        use_transformers = False
+    
+    if use_transformers and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
         return _DEFAULT_TOKENIZER.tokenize(
             text,
             max_length=max_tokens,
             truncation=True,
         )
-    else:
-        # Fallback to regex tokenization
-        tokens = re.findall(r'\b\w+\b', text.lower())
-        if max_tokens is not None and len(tokens) > max_tokens:
-            tokens = tokens[:max_tokens]
-        return tokens
+    
+    # Whitespace-based tokenization with minimal punctuation stripping
+    # This preserves larger semantic chunks for better memorization signal
+    tokens = text.lower().split()  # Handles \n, \t, space, etc.
+    
+    # Strip only common sentence-ending punctuation from token ends
+    # Keep $, quotes, parens as they are semantically meaningful
+    tokens = [t.strip('.,;:!?') for t in tokens]
+    
+    # Filter out empty strings
+    tokens = [t for t in tokens if t]
+    
+    if max_tokens is not None and len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+    
+    return tokens
 
 
 def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute: Optional[set] = None) -> Dict[str, float]:
     """Compute lexical metrics between reference and candidate.
     
-    This function computes up to 6 different lexical metrics, matching the
+    This function computes up to 7 different lexical metrics, matching the
     implementation in llm_judge_remote.py for consistency across the codebase.
     
     Args:
         reference: Ground truth text
         candidate: Candidate text to evaluate
         metrics_to_compute: Set of metric names to compute. If None, computes all metrics.
-                           Valid names: 'lexical_token_overlap', 'lexical_lcs_ratio', 
-                           'lexical_lcs_ratio_cand', 'length_ratio', 'lexical_ngram_coverage',
-                           'lexical_ngram_coverage_ref'
+                           Valid names: 'lexical_token_overlap', 'lexical_token_overlap_ref',
+                           'lexical_lcs_ratio', 'lexical_lcs_ratio_cand', 'length_ratio',
+                           'lexical_ngram_coverage', 'lexical_ngram_coverage_ref'
         
     Returns:
         Dict with requested metrics:
         - lexical_token_overlap: Jaccard similarity (0-1)
+        - lexical_token_overlap_ref: Token overlap normalized by reference (0-1)
         - lexical_lcs_ratio: Normalized LCS ratio by reference length (0-1)
         - lexical_lcs_ratio_cand: Normalized LCS ratio by candidate length (0-1)
         - length_ratio: Token length ratio (candidate/reference)
@@ -302,7 +344,7 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
     # If no specific metrics requested, compute all
     if metrics_to_compute is None:
         metrics_to_compute = {
-            'lexical_token_overlap', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand',
+            'lexical_token_overlap', 'lexical_token_overlap_ref', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand',
             'length_ratio', 'lexical_ngram_coverage', 'lexical_ngram_coverage_ref'
         }
     
@@ -310,7 +352,7 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
     
     # Determine if we need tokenization (needed for most metrics)
     needs_tokenization = any(m in metrics_to_compute for m in [
-        'lexical_token_overlap', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand', 'length_ratio'
+        'lexical_token_overlap', 'lexical_token_overlap_ref', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand', 'length_ratio'
     ])
     
     if needs_tokenization:
@@ -318,13 +360,20 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
         ref_tokens = _tokenize(reference)
         cand_tokens = _tokenize(candidate)
     
-    # 1. Lexical token overlap (Jaccard similarity)
-    if 'lexical_token_overlap' in metrics_to_compute:
+    # 1. Lexical token overlap (Jaccard similarity) and lexical_token_overlap_ref
+    if 'lexical_token_overlap' in metrics_to_compute or 'lexical_token_overlap_ref' in metrics_to_compute:
         ref_set = set(ref_tokens)
         cand_set = set(cand_tokens)
         intersection = ref_set & cand_set
-        union = ref_set | cand_set
-        result['lexical_token_overlap'] = len(intersection) / len(union) if union else 0.0
+        
+        # Jaccard similarity (normalized by union)
+        if 'lexical_token_overlap' in metrics_to_compute:
+            union = ref_set | cand_set
+            result['lexical_token_overlap'] = len(intersection) / len(union) if union else 0.0
+        
+        # Token overlap normalized by reference
+        if 'lexical_token_overlap_ref' in metrics_to_compute:
+            result['lexical_token_overlap_ref'] = len(intersection) / len(ref_set) if ref_set else 0.0
     
     # 2. Lexical LCS ratio (both normalizations)
     if 'lexical_lcs_ratio' in metrics_to_compute or 'lexical_lcs_ratio_cand' in metrics_to_compute:
@@ -363,14 +412,14 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
     # 4. N-gram coverage (normalized by candidate)
     if 'lexical_ngram_coverage' in metrics_to_compute:
         if _HAS_NGRAM_COVERAGE:
-            result['lexical_ngram_coverage'] = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="candidate")
+            result['lexical_ngram_coverage'] = compute_ngram_coverage(candidate, reference, normalize_by="candidate", tokenizer=_tokenize)
         else:
             result['lexical_ngram_coverage'] = 0.0
     
     # 5. N-gram coverage (normalized by reference)
     if 'lexical_ngram_coverage_ref' in metrics_to_compute:
         if _HAS_NGRAM_COVERAGE:
-            result['lexical_ngram_coverage_ref'] = compute_ngram_coverage(candidate, reference, min_ngram=3, normalize_by="reference")
+            result['lexical_ngram_coverage_ref'] = compute_ngram_coverage(candidate, reference, normalize_by="reference", tokenizer=_tokenize)
         else:
             result['lexical_ngram_coverage_ref'] = 0.0
     
@@ -739,6 +788,7 @@ def compute_score(
         - **default_with_length_penalty**: Default metrics with ratio-based length penalty
         - **trio_v2_with_length_penalty**: Trio v2 metrics with ratio-based length penalty
         - **lexical_token_overlap**: Jaccard similarity only
+        - **lexical_token_overlap_ref**: Token overlap normalized by reference only
         - **lexical_lcs_ratio**: LCS normalized by reference only
         - **lexical_lcs_ratio_cand**: LCS normalized by candidate only
         - **length_ratio**: Length ratio only

@@ -62,7 +62,7 @@ def run_ppo(config) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
-@ray.remote(num_cpus=32)  # Allocate 32 CPUs for parallel reward computation
+@ray.remote(num_cpus=48)  # Allocate 32 CPUs for parallel reward computation
                           # Increased from 1 to enable ProcessPoolExecutor parallelism for lexical rewards
 class TaskRunner:
     def run(self, config):

@@ -999,8 +999,8 @@ def load_and_normalize_mia_weights(
 def compute_lexical_similarities(query_solution: str, candidate_solutions: List[str]) -> List[float]:
     """Compute Jaccard similarity between query solution and candidates.
     
-    Uses Qwen3-8B tokenizer which can handle long sequences (32k+ tokens) without
-    truncation warnings.
+    Uses regex-based tokenizer by default to avoid subword overlap artifacts.
+    Set env `DDRL_USE_TRANSFORMERS_TOKENIZER` to use transformers tokenizer backup.
     
     Args:
         query_solution: The query solution text
@@ -1009,19 +1009,32 @@ def compute_lexical_similarities(query_solution: str, candidate_solutions: List[
     Returns:
         List of Jaccard similarity scores [0, 1]
     """
-    from transformers import AutoTokenizer
+    import os
+    import re
     
-    # Use Qwen3-8B tokenizer - handles long sequences without warnings
-    # and provides better tokenization than simple regex
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-7B-Instruct")
+    pattern = r"\\[a-zA-Z]+(?:\{[^}]*\})*|\d+\.?\d*|[a-zA-Z_]\w*|[+\-*/=<>!]=?|[(){}\[\]]|\S"
+    use_transformers = os.environ.get("DDRL_USE_TRANSFORMERS_TOKENIZER", "").strip().lower() in {"1", "true", "yes", "on"}
+    tokenizer = None
+    if use_transformers:
+        try:
+            from transformers import AutoTokenizer as _AutoTokenizer
+            tokenizer = _AutoTokenizer.from_pretrained("allenai/tulu-2-7b")
+        except Exception:
+            tokenizer = None
     
-    # Tokenize query (no truncation, no max_length)
-    query_tokens = set(tokenizer.tokenize(query_solution))
+    # Tokenize query
+    if tokenizer is not None:
+        query_tokens = set(tokenizer.tokenize(query_solution))
+    else:
+        query_tokens = set(re.findall(pattern, query_solution.lower()))
     
     # Compute similarity for each candidate
     similarities = []
     for cand in candidate_solutions:
-        cand_tokens = set(tokenizer.tokenize(cand))
+        if tokenizer is not None:
+            cand_tokens = set(tokenizer.tokenize(cand))
+        else:
+            cand_tokens = set(re.findall(pattern, cand.lower()))
         
         # Jaccard similarity
         intersection = query_tokens & cand_tokens
