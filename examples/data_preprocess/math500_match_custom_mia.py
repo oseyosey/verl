@@ -1156,6 +1156,52 @@ def compute_embedding_similarities(query_solution: str, candidate_solutions: Lis
     return similarities.tolist()
 
 
+def extract_year_from_url(url: str) -> int:
+    """Extract year from AIME problem URL.
+    
+    Example: https://artofproblemsolving.com/wiki/index.php/2025_AIME_I_Problems/Problem_11
+    Returns: 2025
+    
+    Args:
+        url: URL string from the dataset
+        
+    Returns:
+        Year as integer, or None if year cannot be extracted
+    """
+    import re
+    match = re.search(r'/(\d{4})_AIME', url)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def filter_dataset_by_years(dataset, years: List[int], verbose: bool = False):
+    """Filter dataset to only include examples from specified years.
+    
+    Args:
+        dataset: The dataset to filter (must have 'url' field)
+        years: List of years to include
+        verbose: Whether to print debug information
+        
+    Returns:
+        Tuple of (filtered_dataset, filtered_indices)
+    """
+    filtered_indices = []
+    for idx in range(len(dataset)):
+        if "url" in dataset[idx]:
+            year = extract_year_from_url(dataset[idx]["url"])
+            if year in years:
+                filtered_indices.append(idx)
+    
+    if verbose:
+        print(f"[filter_dataset_by_years] Filtered {len(filtered_indices)} examples from years {years} out of {len(dataset)} total")
+    
+    if len(filtered_indices) == 0:
+        raise ValueError(f"No examples found for years {years}. Check that the dataset has 'url' field with year information.")
+    
+    return dataset.select(filtered_indices), filtered_indices
+
+
 def sample_additional_solutions(
     current_solution: str,
     current_idx: int,
@@ -1537,12 +1583,44 @@ def main():
         default=1,
         help="Number of additional solutions to sample and add to target_gt (default: 1).",
     )
+    parser.add_argument(
+        "--filter_by_year",
+        action="store_true",
+        help="Enable year-based filtering for member and non-member data (requires dataset with 'url' field containing year information).",
+    )
+    parser.add_argument(
+        "--nonmember_years",
+        type=int,
+        nargs="+",
+        default=[2025],
+        help="List of years to use for non-member data (default: [2025]). Only used when --filter_by_year is enabled.",
+    )
+    parser.add_argument(
+        "--member_years",
+        type=int,
+        nargs="+",
+        default=[2021, 2022, 2023, 2024],
+        help="List of years to use for member data (default: [2021, 2022, 2023, 2024]). Only used when --filter_by_year is enabled.",
+    )
 
     args = parser.parse_args()
 
     # Handle thinking mode logic
     if args.no_llm_thinking:
         args.llm_thinking_enabled = False
+    
+    # Validate year filtering arguments
+    if args.filter_by_year:
+        if not args.mia:
+            raise ValueError("--filter_by_year requires --mia to be enabled")
+        if len(args.nonmember_years) == 0:
+            raise ValueError("--nonmember_years must contain at least one year")
+        if len(args.member_years) == 0:
+            raise ValueError("--member_years must contain at least one year")
+        # Check for overlap
+        overlap = set(args.member_years) & set(args.nonmember_years)
+        if overlap:
+            print(f"WARNING: Years {overlap} appear in both member_years and nonmember_years")
     
     # Validate augmentation arguments
     if args.augment_target_gt:
@@ -1574,6 +1652,51 @@ def main():
     if args.verbose:
         print(f"[main] Loaded {len(ds_full)} examples from {args.dataset_path} ({args.dataset_split} split)")
     
+    # Apply year-based filtering if enabled
+    member_pool_indices = None
+    nonmember_pool_indices = None
+    
+    if args.filter_by_year:
+        print("\n=== Year-based Filtering Enabled ===")
+        print(f"Member years: {args.member_years}")
+        print(f"Non-member years: {args.nonmember_years}")
+        
+        # Check if dataset has 'url' field
+        if len(ds_full) > 0 and "url" not in ds_full[0]:
+            raise ValueError("--filter_by_year requires dataset to have 'url' field, but it was not found")
+        
+        # Filter for member pool
+        ds_member_pool, member_pool_indices = filter_dataset_by_years(
+            ds_full, args.member_years, verbose=args.verbose
+        )
+        
+        # Filter for non-member pool
+        ds_nonmember_pool, nonmember_pool_indices = filter_dataset_by_years(
+            ds_full, args.nonmember_years, verbose=args.verbose
+        )
+        
+        # Validate subset size against filtered pools
+        if args.subset_size > len(ds_member_pool):
+            raise ValueError(
+                f"subset_size ({args.subset_size}) exceeds available member data after year filtering "
+                f"({len(ds_member_pool)} examples from years {args.member_years}). "
+                f"Please reduce subset_size to {len(ds_member_pool)} or less."
+            )
+        
+        if args.mia and args.mia_nonmember_method != "unused_examples":
+            # For random_pairing and perturbed_solution, we sample from the non-member pool
+            if args.subset_size > len(ds_nonmember_pool):
+                raise ValueError(
+                    f"subset_size ({args.subset_size}) exceeds available non-member data after year filtering "
+                    f"({len(ds_nonmember_pool)} examples from years {args.nonmember_years}). "
+                    f"Please reduce subset_size to {len(ds_nonmember_pool)} or less."
+                )
+        
+        if args.verbose:
+            print(f"[main] Year filtering results:")
+            print(f"  - Member pool: {len(ds_member_pool)} examples from years {args.member_years}")
+            print(f"  - Non-member pool: {len(ds_nonmember_pool)} examples from years {args.nonmember_years}")
+    
     # Load transformed dataset if provided
     ds_transformed = None
     if args.transformed_dataset_path:
@@ -1604,28 +1727,55 @@ def main():
     # Check if the requested subset size is valid for MIA
     total_dataset_size = len(ds_full)
     if args.mia and args.mia_nonmember_method == "unused_examples":
-        unused_examples_available = total_dataset_size - finetune_size
-        if args.subset_size > unused_examples_available:
-            raise ValueError(
-                f"For MIA with unused examples, member size ({args.subset_size}) cannot exceed "
-                f"the number of unused examples ({unused_examples_available}). "
-                f"Fine-tuning used {finetune_size} examples, leaving {unused_examples_available} unused. "
-                f"Please reduce subset_size to {unused_examples_available} or less."
-            )
+        if args.filter_by_year:
+            # With year filtering, we need to check if non-member pool has enough examples
+            # In unused_examples mode, non-members come from the non-member pool
+            unused_examples_available = len(ds_nonmember_pool)
+            if args.subset_size > unused_examples_available:
+                raise ValueError(
+                    f"For MIA with unused examples and year filtering, member size ({args.subset_size}) cannot exceed "
+                    f"the number of available non-member examples ({unused_examples_available} from years {args.nonmember_years}). "
+                    f"Please reduce subset_size to {unused_examples_available} or less."
+                )
+        else:
+            unused_examples_available = total_dataset_size - finetune_size
+            if args.subset_size > unused_examples_available:
+                raise ValueError(
+                    f"For MIA with unused examples, member size ({args.subset_size}) cannot exceed "
+                    f"the number of unused examples ({unused_examples_available}). "
+                    f"Fine-tuning used {finetune_size} examples, leaving {unused_examples_available} unused. "
+                    f"Please reduce subset_size to {unused_examples_available} or less."
+                )
     
     # Random subsampling for member data. If requested subset is >= len(ds_full), keep full set.
     if args.subset_size is not None and args.subset_size < len(ds_full):
         rng = random.Random(args.subset_seed)
-        sampled_indices = rng.sample(range(len(ds_full)), args.subset_size)
-        # Preserve original order for stability and easier debugging
-        sampled_indices.sort()
-        ds_members_subset = ds_full.select(sampled_indices)
-        member_indices = sampled_indices  # Store for non-member generation
-        if args.verbose:
-            print(f"[main] Subsampled {len(ds_members_subset)} examples for member data using seed {args.subset_seed}")
-            print(f"[main] Member indices: {member_indices[:10]}..." if len(member_indices) > 10 else f"[main] Member indices: {member_indices}")
-            if args.mia and args.mia_nonmember_method == "unused_examples":
-                print(f"[main] Will have {total_dataset_size - len(member_indices)} examples available for non-members")
+        
+        if args.filter_by_year:
+            # Sample from the filtered member pool
+            sampled_indices_in_pool = rng.sample(range(len(member_pool_indices)), args.subset_size)
+            sampled_indices_in_pool.sort()
+            # Map back to original dataset indices
+            sampled_indices = [member_pool_indices[i] for i in sampled_indices_in_pool]
+            sampled_indices.sort()
+            ds_members_subset = ds_full.select(sampled_indices)
+            member_indices = sampled_indices
+            if args.verbose:
+                print(f"[main] Subsampled {len(ds_members_subset)} examples for member data from year-filtered pool using seed {args.subset_seed}")
+                print(f"[main] Member indices: {member_indices[:10]}..." if len(member_indices) > 10 else f"[main] Member indices: {member_indices}")
+                if args.mia and args.mia_nonmember_method == "unused_examples":
+                    print(f"[main] Will have {len(nonmember_pool_indices)} examples available for non-members from years {args.nonmember_years}")
+        else:
+            sampled_indices = rng.sample(range(len(ds_full)), args.subset_size)
+            # Preserve original order for stability and easier debugging
+            sampled_indices.sort()
+            ds_members_subset = ds_full.select(sampled_indices)
+            member_indices = sampled_indices  # Store for non-member generation
+            if args.verbose:
+                print(f"[main] Subsampled {len(ds_members_subset)} examples for member data using seed {args.subset_seed}")
+                print(f"[main] Member indices: {member_indices[:10]}..." if len(member_indices) > 10 else f"[main] Member indices: {member_indices}")
+                if args.mia and args.mia_nonmember_method == "unused_examples":
+                    print(f"[main] Will have {total_dataset_size - len(member_indices)} examples available for non-members")
     else:
         if args.mia and args.mia_nonmember_method == "unused_examples":
             raise ValueError(
@@ -1728,8 +1878,16 @@ def main():
                 }
                 member_examples_list.append(member_ex)
             
+            # Use filtered non-member pool if year filtering is enabled
+            if args.filter_by_year:
+                nonmember_dataset = ds_full.select(nonmember_pool_indices)
+                if args.verbose:
+                    print(f"[main] Using year-filtered non-member pool: {len(nonmember_dataset)} examples from years {args.nonmember_years}")
+            else:
+                nonmember_dataset = ds_full
+            
             non_member_examples = create_non_member_pairs(
-                ds_full, 
+                nonmember_dataset, 
                 member_examples=member_examples_list,
                 num_pairs=len(ds_members_subset), 
                 mode=args.random_pairing_mode,
@@ -1740,23 +1898,67 @@ def main():
         elif args.mia_nonmember_method == "unused_examples":
             print(f"Creating non-member examples from unused dataset entries...")
             
-            #* Get the fine-tuning indices (what was actually used for training) *#
-            finetune_rng = random.Random(args.subset_seed)
-            finetune_indices = finetune_rng.sample(range(len(ds_full)), finetune_size)
-            finetune_indices.sort()
-            
-            if args.verbose:
-                print(f"[main] Fine-tuning used {len(finetune_indices)} examples, {len(ds_full) - len(finetune_indices)} unused")
-            
-            non_member_examples, final_member_indices = create_non_member_from_unused(
-                ds_full, finetune_indices, num_pairs=len(ds_members_subset), 
-                seed=args.subset_seed + 1, verbose=args.verbose
-            )
-            
-            # If we had to subsample members, update the member dataset
-            if len(final_member_indices) < len(member_indices):
-                print(f"Note: Subsampled member data from {len(member_indices)} to {len(final_member_indices)} examples to match available non-members")
-                ds_members_subset = ds_full.select(final_member_indices)
+            if args.filter_by_year:
+                # With year filtering, non-members come from the non-member pool
+                # Members were already sampled from member pool
+                # Non-members should be unused examples from the non-member pool
+                if args.verbose:
+                    print(f"[main] Using year-filtered non-member pool: {len(nonmember_pool_indices)} examples from years {args.nonmember_years}")
+                
+                # For unused_examples with year filtering:
+                # - Members come from member_years (already sampled)
+                # - Non-members come from nonmember_years (the entire pool, since they're unused by definition)
+                # Sample from non-member pool
+                nonmember_rng = random.Random(args.subset_seed + 1)
+                if len(nonmember_pool_indices) >= len(ds_members_subset):
+                    selected_nonmember_indices_in_pool = nonmember_rng.sample(range(len(nonmember_pool_indices)), len(ds_members_subset))
+                    selected_nonmember_indices_in_pool.sort()
+                    selected_nonmember_indices = [nonmember_pool_indices[i] for i in selected_nonmember_indices_in_pool]
+                else:
+                    # Use all non-member pool indices
+                    selected_nonmember_indices = nonmember_pool_indices
+                
+                selected_nonmember_indices.sort()
+                
+                # Create non-member examples from selected indices
+                non_member_examples = []
+                for idx in selected_nonmember_indices:
+                    ex = ds_full[idx]
+                    non_member_ex = {
+                        "problem": str(ex["problem"]).strip(),
+                        "solution": str(ex["solution"]).strip(),
+                        "answer": str(ex.get("answer", "")).strip(),
+                        "subject": str(ex.get("subject", "")).strip(),
+                        "level": ex.get("level", 0),
+                        "unique_id": str(ex.get("unique_id", "")).strip(),
+                        "original_idx": idx,
+                        "is_member": False
+                    }
+                    non_member_examples.append(non_member_ex)
+                
+                final_member_indices = member_indices
+                
+                if args.verbose:
+                    print(f"[main] Created {len(non_member_examples)} non-member examples from year-filtered pool")
+                    print(f"[main] Non-member indices: {selected_nonmember_indices[:10]}..." if len(selected_nonmember_indices) > 10 else f"[main] Non-member indices: {selected_nonmember_indices}")
+            else:
+                #* Get the fine-tuning indices (what was actually used for training) *#
+                finetune_rng = random.Random(args.subset_seed)
+                finetune_indices = finetune_rng.sample(range(len(ds_full)), finetune_size)
+                finetune_indices.sort()
+                
+                if args.verbose:
+                    print(f"[main] Fine-tuning used {len(finetune_indices)} examples, {len(ds_full) - len(finetune_indices)} unused")
+                
+                non_member_examples, final_member_indices = create_non_member_from_unused(
+                    ds_full, finetune_indices, num_pairs=len(ds_members_subset), 
+                    seed=args.subset_seed + 1, verbose=args.verbose
+                )
+                
+                # If we had to subsample members, update the member dataset
+                if len(final_member_indices) < len(member_indices):
+                    print(f"Note: Subsampled member data from {len(member_indices)} to {len(final_member_indices)} examples to match available non-members")
+                    ds_members_subset = ds_full.select(final_member_indices)
         elif args.mia_nonmember_method == "perturbed_solution":
             print(f"Creating {len(ds_members_subset)} non-member examples with perturbed solutions mode '{args.random_pairing_mode}'...")
             
@@ -1774,16 +1976,59 @@ def main():
                 }
                 member_examples_list.append(member_ex)
             
-            non_member_examples = create_non_member_from_perturbed(
-                ds_perturbed, 
-                member_examples=member_examples_list,
-                num_pairs=len(ds_members_subset), 
-                mode=args.random_pairing_mode,
-                seed=args.subset_seed + 1, 
-                verbose=args.verbose,
-                original_dataset=ds_full,
-                member_indices=member_indices
-            )
+            # For perturbed_solution, we need to use the filtered pools if year filtering is enabled
+            if args.filter_by_year:
+                # Use filtered pools for both original and perturbed datasets
+                if args.random_pairing_mode == "same_problem":
+                    # Members use member_years, perturbed solutions also from member indices
+                    non_member_examples = create_non_member_from_perturbed(
+                        ds_perturbed, 
+                        member_examples=member_examples_list,
+                        num_pairs=len(ds_members_subset), 
+                        mode=args.random_pairing_mode,
+                        seed=args.subset_seed + 1, 
+                        verbose=args.verbose,
+                        original_dataset=ds_full,
+                        member_indices=member_indices
+                    )
+                elif args.random_pairing_mode == "full_random":
+                    # Random problems from non-member pool with their perturbed solutions
+                    # Create a modified version that samples from non-member pool
+                    nonmember_rng = random.Random(args.subset_seed + 1)
+                    selected_indices_in_pool = nonmember_rng.sample(range(len(nonmember_pool_indices)), min(len(ds_members_subset), len(nonmember_pool_indices)))
+                    selected_indices = [nonmember_pool_indices[i] for i in selected_indices_in_pool]
+                    
+                    non_member_examples = []
+                    for idx in selected_indices:
+                        original_ex = ds_full[idx]
+                        perturbed_ex = ds_perturbed[idx]
+                        
+                        non_member_ex = {
+                            "problem": str(original_ex["problem"]).strip(),
+                            "solution": str(perturbed_ex["solution"]).strip(),
+                            "answer": str(perturbed_ex.get("answer", "")).strip(),
+                            "subject": str(perturbed_ex.get("subject", "")).strip(),
+                            "level": perturbed_ex.get("level", 0),
+                            "unique_id": str(original_ex.get("unique_id", "")).strip(),
+                            "is_member": False,
+                        }
+                        non_member_examples.append(non_member_ex)
+                    
+                    if args.verbose:
+                        print(f"[main] Created {len(non_member_examples)} perturbed non-member examples from year-filtered pool (full_random mode)")
+                else:
+                    raise ValueError(f"Unknown random_pairing_mode: {args.random_pairing_mode}")
+            else:
+                non_member_examples = create_non_member_from_perturbed(
+                    ds_perturbed, 
+                    member_examples=member_examples_list,
+                    num_pairs=len(ds_members_subset), 
+                    mode=args.random_pairing_mode,
+                    seed=args.subset_seed + 1, 
+                    verbose=args.verbose,
+                    original_dataset=ds_full,
+                    member_indices=member_indices
+                )
             final_member_indices = member_indices  # No subsampling needed
         else:
             raise ValueError(f"Unknown non-member method: {args.mia_nonmember_method}")
@@ -2119,6 +2364,18 @@ def main():
                 "total_dataset_size": len(ds_full)
             }
         }
+        
+        # Add year filtering information if enabled
+        if args.filter_by_year:
+            index_info["year_filtering"] = {
+                "enabled": True,
+                "member_years": args.member_years,
+                "nonmember_years": args.nonmember_years,
+                "member_pool_size": len(member_pool_indices),
+                "nonmember_pool_size": len(nonmember_pool_indices),
+                "member_pool_indices": member_pool_indices,
+                "nonmember_pool_indices": nonmember_pool_indices
+            }
         
         # Add non-member specific info
         if args.mia_nonmember_method == "unused_examples":

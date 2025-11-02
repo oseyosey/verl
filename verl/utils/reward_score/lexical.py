@@ -139,6 +139,27 @@ DEFAULT_LENGTH_THRESHOLD = 1.5
 
 # Default metric profiles with weights
 METRIC_PROFILES = {
+    "trio_v1": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0]
+    },
+    "trio_v2": {
+        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_ngram_coverage"],
+        "weights": [1.0, 1.0, 1.0]
+    },
+    #* V3 are normalized by reference only, avoid reward hacking toward shorter solutions"
+    "duo_v3": {
+        "metrics": ["lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0]
+    },
+    "trio_v3": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0]
+    },
+    "duo_v4": {
+        "metrics": ["lexical_lcs_ratio", "lexical_token_overlap_ref"],
+        "weights": [1.0, 1.0]
+    },  
     # Default profile: average of 3 key metrics with equal weights
     "duo_v1_ratio_penalty_1.25": {
         "metrics": ["lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
@@ -158,29 +179,12 @@ METRIC_PROFILES = {
         "length_penalty_type": "quadratic",
         "length_threshold": 1.25
     },
-    "trio_v1": {
-        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
-        "weights": [1.0, 1.0, 1.0]
-    },
-    # Option A: Reference-normalized metrics (recommended to avoid short-sentence bias)
-    "trio_v2": {
-        "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_ngram_coverage"],
-        "weights": [1.0, 1.0, 1.0]
-    },
-    #* V3 are normalized by reference only, avoid reward hacking toward shorter solutions"
-    "duo_v3": {
-        "metrics": ["lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
-        "weights": [1.0, 1.0]
-    },
-    "trio_v3": {
-        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
-        "weights": [1.0, 1.0, 1.0]
-    },
-    "duo_v4": {
+    "duo_v4_ratio_penalty_1.50": {
         "metrics": ["lexical_lcs_ratio", "lexical_token_overlap_ref"],
-        "weights": [1.0, 1.0]
-    },  
-    # Option B: Original metrics with length penalty
+        "weights": [1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50
+    },
     "trio_v1_ratio_penalty_1.25": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
         "weights": [1.0, 1.0, 1.0],
@@ -203,12 +207,6 @@ METRIC_PROFILES = {
     "trio_v3_ratio_penalty_1.50": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
-        "length_penalty_type": "ratio",
-        "length_threshold": 1.50
-    },
-    "duo_v4_ratio_penalty_1.50": {
-        "metrics": ["lexical_lcs_ratio", "lexical_token_overlap_ref"],
-        "weights": [1.0, 1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50
     },
