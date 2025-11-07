@@ -210,6 +210,12 @@ METRIC_PROFILES = {
         "length_penalty_type": "ratio",
         "length_threshold": 1.50
     },
+    "trio_v3_ratio_penalty_2.0": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 2.0
+    },
     # Comprehensive profile using all metrics
     "comprehensive": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio", "lexical_lcs_ratio_cand", 
@@ -262,6 +268,45 @@ METRIC_PROFILES = {
         "length_threshold": 1.25,
         "use_mia_weighting": True,
         "mia_invert_weights": True,  # Lower MIA score = more likely member = higher weight
+    },
+    # Advanced MIA weighting modes
+    "trio_v3_ratio_penalty_1.50_mia_linear": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,  # Lower MIA → higher weight
+        "mia_weighting_mode": "linear"
+    },
+    "trio_v3_ratio_penalty_1.50_mia_quadratic": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,  # Lower MIA → higher weight
+        "mia_weighting_mode": "quadratic"
+    },
+    "trio_v3_ratio_penalty_1.50_mia_contrastive_0.3": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,
+        "mia_weighting_mode": "contrastive",
+        "mia_contrastive_alpha": 0.3
+    },
+    "trio_v3_ratio_penalty_1.50_mia_contrastive_0.5": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,
+        "mia_weighting_mode": "contrastive",
+        "mia_contrastive_alpha": 0.5
     },
 }
 
@@ -695,6 +740,55 @@ def _extract_mia_weight(ref: str, extra_info: dict | None) -> Optional[float]:
     return None
 
 
+def _apply_mia_weighting(
+    score: float,
+    mia_weight: float,
+    mode: str = "linear",
+    invert_weights: bool = False,
+    contrastive_alpha: float = 0.5
+) -> float:
+    """Apply MIA weighting with different modes.
+    
+    Args:
+        score: Base lexical similarity score
+        mia_weight: Raw MIA weight (lower = more likely member)
+        mode: Weighting mode - "linear", "quadratic", "contrastive"
+        invert_weights: If True, invert mia_weight (1 - mia_weight)
+        contrastive_alpha: Penalty coefficient for contrastive mode
+    
+    Returns:
+        Weighted score
+    """
+    # Invert if needed (lower MIA → higher weight for members)
+    if invert_weights:
+        mia_weight = 1.0 - mia_weight
+    
+    if mode == "linear":
+        # Current behavior: simple linear scaling
+        return score * mia_weight
+    
+    elif mode == "quadratic":
+        # Non-linear amplification: quadratic scaling
+        # Members (mia_weight~0.9): 0.9^2 = 0.81 (mild reduction)
+        # Non-members (mia_weight~0.1): 0.1^2 = 0.01 (severe reduction)
+        # Creates 81x gradient ratio instead of 9x with linear
+        return score * (mia_weight ** 2)
+    
+    elif mode == "contrastive":
+        # Contrastive objective: penalize good reconstruction of non-members
+        # High mia_weight (member): positive reward
+        # Low mia_weight (non-member): penalty for high scores
+        positive_term = score * mia_weight
+        negative_term = score * (1.0 - mia_weight)
+        weighted_score = positive_term - contrastive_alpha * negative_term
+        # Clip to non-negative (allows small negatives to create gradient signal)
+        return max(weighted_score, -0.1)
+    
+    else:
+        warnings.warn(f"Unknown MIA weighting mode: {mode}, using linear")
+        return score * mia_weight
+
+
 # -----------------------------------------------------------------------------
 # Utility: filter reference list based on *extra_info*
 # -----------------------------------------------------------------------------
@@ -779,6 +873,8 @@ def compute_score(
         - nonmember_mia_weight: MIA weight for non-member ground truth (perturbed_solution mode)
         - member_ground_truth: Member ground truth string (perturbed_solution mode)
         - nonmember_ground_truth: Non-member ground truth string (perturbed_solution mode)
+        - mia_weighting_mode: MIA weighting strategy ("linear", "quadratic", "contrastive")
+        - mia_contrastive_alpha: Penalty coefficient for contrastive mode (default: 0.5)
     metric_profile
         The metric profile to use. Available options:
         - **default**: Average of token_overlap, lcs_ratio_cand, ngram_coverage (may favor short outputs)
@@ -917,6 +1013,10 @@ def compute_score(
                 
                 # Apply MIA weighting if configured
                 if profile.get("use_mia_weighting", False):
+                    mia_mode = profile.get("mia_weighting_mode", "linear")
+                    mia_invert = profile.get("mia_invert_weights", False)
+                    contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
+                    
                     for i in range(len(all_scores)):
                         # Get the extra_info for this sample
                         sol_idx = pair_indices[i][0]
@@ -925,10 +1025,9 @@ def compute_score(
                         # Extract and apply MIA weight
                         mia_weight = _extract_mia_weight(pair_refs[i], ei)
                         if mia_weight is not None:
-                            # Optionally invert weight
-                            if profile.get("mia_invert_weights", False):
-                                mia_weight = 1.0 - mia_weight
-                            all_scores[i] = all_scores[i] * mia_weight
+                            all_scores[i] = _apply_mia_weighting(
+                                all_scores[i], mia_weight, mia_mode, mia_invert, contrastive_alpha
+                            )
                 
                 # Group scores by solution and take maximum
                 results = []
@@ -980,6 +1079,10 @@ def compute_score(
             
             # Apply MIA weighting if configured
             if profile.get("use_mia_weighting", False):
+                mia_mode = profile.get("mia_weighting_mode", "linear")
+                mia_invert = profile.get("mia_invert_weights", False)
+                contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
+                
                 for i in range(len(all_scores)):
                     # Get the extra_info for this sample
                     sol_idx = pair_indices[i]
@@ -988,10 +1091,9 @@ def compute_score(
                     # Extract and apply MIA weight
                     mia_weight = _extract_mia_weight(pair_refs[i], ei)
                     if mia_weight is not None:
-                        # Optionally invert weight
-                        if profile.get("mia_invert_weights", False):
-                            mia_weight = 1.0 - mia_weight
-                        all_scores[i] = all_scores[i] * mia_weight
+                        all_scores[i] = _apply_mia_weighting(
+                            all_scores[i], mia_weight, mia_mode, mia_invert, contrastive_alpha
+                        )
             
             # Group scores by solution and take maximum
             results = []
@@ -1042,10 +1144,12 @@ def compute_score(
     if profile.get("use_mia_weighting", False) and best_ref is not None:
         mia_weight = _extract_mia_weight(best_ref, extra_info)
         if mia_weight is not None:
-            # Optionally invert weight (lower MIA score = more likely member)
-            if profile.get("mia_invert_weights", False):
-                mia_weight = 1.0 - mia_weight
-            best_score = best_score * mia_weight
+            mia_mode = profile.get("mia_weighting_mode", "linear")
+            mia_invert = profile.get("mia_invert_weights", False)
+            contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
+            best_score = _apply_mia_weighting(
+                best_score, mia_weight, mia_mode, mia_invert, contrastive_alpha
+            )
     
     return best_score
 
