@@ -29,6 +29,8 @@ def default_compute_score(
     solution_strs=None,
     ground_truths=None,
     extra_infos=None,
+    # Additional reward kwargs (passed through from config)
+    **reward_kwargs,
 ):
     """Compute the score for a given solution based on the data source.
     
@@ -62,6 +64,7 @@ def default_compute_score(
             extra_infos=extra_infos,
             sandbox_fusion_url=sandbox_fusion_url,
             concurrent_semaphore=concurrent_semaphore,
+            **reward_kwargs,
         )
     
     # Handle single interface (original logic)
@@ -167,6 +170,7 @@ def default_compute_score(
             solution_str=solution_str,
             ground_truth=ground_truth,
             extra_info=extra_info,
+            **reward_kwargs,
         )
     elif data_source.startswith("llm_judge_remote"):
         # Remote LLM-as-a-judge reward using vLLM server to evaluate similarity
@@ -215,7 +219,8 @@ def _default_compute_score_batched(
     ground_truths, 
     extra_infos=None, 
     sandbox_fusion_url=None, 
-    concurrent_semaphore=None
+    concurrent_semaphore=None,
+    **reward_kwargs,
 ):
     """
     Batched version of default_compute_score for BatchRewardManager compatibility.
@@ -270,6 +275,7 @@ def _default_compute_score_batched(
                 solution_strs=solution_strs,
                 ground_truths=ground_truths,
                 extra_infos=extra_infos,
+                **reward_kwargs,
             )
         # Add more batched implementations here as needed
     
@@ -283,6 +289,7 @@ def _default_compute_score_batched(
             extra_info=extra_infos[i],
             sandbox_fusion_url=sandbox_fusion_url,
             concurrent_semaphore=concurrent_semaphore,
+            **reward_kwargs,
         )
         results.append(result)
     

@@ -801,6 +801,14 @@ reward_model:
     # Max concurrent requests allowed to sandbox
     max_concurrent: 64
 
+  # Additional keyword arguments passed to reward functions
+  reward_kwargs:
+    
+    # Truncate ground truth by this ratio to match assistant prefix given during generation
+    # This prevents reward hacking by not giving credit for text already provided to the model
+    # Set to 0.0 for no truncation (default), 0.25 to truncate first 25% of words
+    truncate_prefix_ratio: 0.0
+
   # profiler configs
   profiler:
 

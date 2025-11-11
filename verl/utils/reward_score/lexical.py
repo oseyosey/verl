@@ -9,7 +9,7 @@ expected by verl's reward loading utilities.
 
 Key features
 ------------
-* **Seven lexical metrics** available:
+* **Nine lexical metrics** available:
   - ``lexical_token_overlap``: Jaccard similarity (0-1)
   - ``lexical_token_overlap_ref``: Token overlap normalized by reference (0-1)
   - ``lexical_lcs_ratio``: Normalized LCS ratio by reference length (0-1)
@@ -17,6 +17,8 @@ Key features
   - ``length_ratio``: Token length ratio (candidate/reference)
   - ``lexical_ngram_coverage``: N-gram coverage normalized by candidate (0-1)
   - ``lexical_ngram_coverage_ref``: N-gram coverage normalized by reference (0-1)
+  - ``lexical_unique_ngram_coverage``: Unique n-gram overlap normalized by candidate (0-1)
+  - ``lexical_unique_ngram_coverage_ref``: Unique n-gram overlap normalized by reference (0-1)
 * **Flexible metric selection** via ``metric_profile`` parameter
 * **Weighted aggregation** of multiple metrics with configurable weights
 * **Length penalty** support to discourage outputs that are too short or too long
@@ -96,12 +98,12 @@ except ImportError:
 
 # Import n-gram coverage
 try:
-    from ...ddrl.utils_rl.ngram_coverage import compute_ngram_coverage
+    from ...ddrl.utils_rl.ngram_coverage import compute_ngram_coverage, compute_unique_ngram_coverage
     _HAS_NGRAM_COVERAGE = True
 except ImportError:
     # Try alternative import paths
     try:
-        from ddrl.utils_rl.ngram_coverage import compute_ngram_coverage
+        from ddrl.utils_rl.ngram_coverage import compute_ngram_coverage, compute_unique_ngram_coverage
         _HAS_NGRAM_COVERAGE = True
     except ImportError:
         _HAS_NGRAM_COVERAGE = False
@@ -179,6 +181,12 @@ METRIC_PROFILES = {
         "length_penalty_type": "quadratic",
         "length_threshold": 1.25
     },
+    "duo_v3_unique_ratio_penalty_1.50": {
+        "metrics": ["lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50
+    },
     "duo_v4_ratio_penalty_1.50": {
         "metrics": ["lexical_lcs_ratio", "lexical_token_overlap_ref"],
         "weights": [1.0, 1.0],
@@ -212,6 +220,19 @@ METRIC_PROFILES = {
     },
     "trio_v3_ratio_penalty_2.0": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 2.0
+    },
+    # Trio v3 with unique n-gram coverage (prevents repetition reward hacking in ngarm hacking)
+    "trio_v3_unique_ratio_penalty_1.50": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50
+    },
+    "trio_v3_unique_ratio_penalty_2.0": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 2.0
@@ -251,6 +272,14 @@ METRIC_PROFILES = {
         "metrics": ["lexical_ngram_coverage_ref"],
         "weights": [1.0]
     },
+    "lexical_unique_ngram_coverage": {
+        "metrics": ["lexical_unique_ngram_coverage"],
+        "weights": [1.0]
+    },
+    "lexical_unique_ngram_coverage_ref": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0]
+    },
     # Legacy compatibility mappings
     "token_ratio": {
         "metrics": ["lexical_token_overlap"],
@@ -259,6 +288,36 @@ METRIC_PROFILES = {
     "ordered_token": {
         "metrics": ["lexical_lcs_ratio"],
         "weights": [1.0]
+    },
+    "lexical_unique_ngram_coverage_ref_ratio_penalty_1.50": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+    },
+    "lexical_unique_ngram_coverage_ref_ratio_penalty_2.0": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 2.0,
+    },
+    "lexical_token_overlap_ref_ratio_penalty_1.50": {
+        "metrics": ["lexical_token_overlap_ref"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+    },
+    "lexical_lcs_ratio_ratio_penalty_1.50": {
+        "metrics": ["lexical_lcs_ratio"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+    },
+    "lexical_lcs_ratio_cand_ratio_penalty_1.50": {
+        "metrics": ["lexical_lcs_ratio_cand"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
     },
     # MIA-weighted profiles (examples)
     "trio_v1_ratio_penalty_1.25_mia": {
@@ -281,6 +340,15 @@ METRIC_PROFILES = {
     },
     "trio_v3_ratio_penalty_1.50_mia_quadratic": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,  # Lower MIA → higher weight
+        "mia_weighting_mode": "quadratic"
+    },
+    "trio_v3_unique_ratio_penalty_1.50_mia_quadratic": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
@@ -363,7 +431,7 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
 def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute: Optional[set] = None) -> Dict[str, float]:
     """Compute lexical metrics between reference and candidate.
     
-    This function computes up to 7 different lexical metrics, matching the
+    This function computes up to 9 different lexical metrics, matching the
     implementation in llm_judge_remote.py for consistency across the codebase.
     
     Args:
@@ -372,7 +440,8 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
         metrics_to_compute: Set of metric names to compute. If None, computes all metrics.
                            Valid names: 'lexical_token_overlap', 'lexical_token_overlap_ref',
                            'lexical_lcs_ratio', 'lexical_lcs_ratio_cand', 'length_ratio',
-                           'lexical_ngram_coverage', 'lexical_ngram_coverage_ref'
+                           'lexical_ngram_coverage', 'lexical_ngram_coverage_ref',
+                           'lexical_unique_ngram_coverage', 'lexical_unique_ngram_coverage_ref'
         
     Returns:
         Dict with requested metrics:
@@ -383,12 +452,15 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
         - length_ratio: Token length ratio (candidate/reference)
         - lexical_ngram_coverage: N-gram coverage normalized by candidate (0-1)
         - lexical_ngram_coverage_ref: N-gram coverage normalized by reference (0-1)
+        - lexical_unique_ngram_coverage: Unique n-gram overlap normalized by candidate (0-1)
+        - lexical_unique_ngram_coverage_ref: Unique n-gram overlap normalized by reference (0-1)
     """
     # If no specific metrics requested, compute all
     if metrics_to_compute is None:
         metrics_to_compute = {
             'lexical_token_overlap', 'lexical_token_overlap_ref', 'lexical_lcs_ratio', 'lexical_lcs_ratio_cand',
-            'length_ratio', 'lexical_ngram_coverage', 'lexical_ngram_coverage_ref'
+            'length_ratio', 'lexical_ngram_coverage', 'lexical_ngram_coverage_ref',
+            'lexical_unique_ngram_coverage', 'lexical_unique_ngram_coverage_ref'
         }
     
     result = {}
@@ -465,6 +537,20 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
             result['lexical_ngram_coverage_ref'] = compute_ngram_coverage(candidate, reference, normalize_by="reference", tokenizer=_tokenize)
         else:
             result['lexical_ngram_coverage_ref'] = 0.0
+    
+    # 6. Unique N-gram coverage (normalized by candidate)
+    if 'lexical_unique_ngram_coverage' in metrics_to_compute:
+        if _HAS_NGRAM_COVERAGE:
+            result['lexical_unique_ngram_coverage'] = compute_unique_ngram_coverage(candidate, reference, normalize_by="candidate", tokenizer=_tokenize)
+        else:
+            result['lexical_unique_ngram_coverage'] = 0.0
+    
+    # 7. Unique N-gram coverage (normalized by reference)
+    if 'lexical_unique_ngram_coverage_ref' in metrics_to_compute:
+        if _HAS_NGRAM_COVERAGE:
+            result['lexical_unique_ngram_coverage_ref'] = compute_unique_ngram_coverage(candidate, reference, normalize_by="reference", tokenizer=_tokenize)
+        else:
+            result['lexical_unique_ngram_coverage_ref'] = 0.0
     
     return result
 
@@ -830,6 +916,38 @@ def _filter_refs(refs: List[str], extra_info: dict | None) -> List[str]:
 
 
 # -----------------------------------------------------------------------------
+# Utility: Truncate prefix from ground truth
+# -----------------------------------------------------------------------------
+
+
+def _truncate_prefix_from_ground_truth(ground_truth: str, truncate_ratio: float) -> str:
+    """Truncate the first X% of words from ground_truth to match prefix given during generation.
+    
+    This prevents reward hacking by not giving credit for text the model was already provided.
+    Matches the prefix generation logic in math500_match_custom_mia.py.
+    
+    Args:
+        ground_truth: The ground truth solution text
+        truncate_ratio: Ratio of words to truncate from the beginning (e.g., 0.25 for 25%)
+        
+    Returns:
+        Truncated ground truth string with prefix removed
+    """
+    if truncate_ratio <= 0.0 or truncate_ratio >= 1.0:
+        return ground_truth
+    
+    words = ground_truth.split()
+    num_words_to_remove = int(len(words) * truncate_ratio)
+    
+    if num_words_to_remove >= len(words):
+        # If truncation would remove everything, return a single space to avoid empty string
+        return " "
+    
+    truncated_words = words[num_words_to_remove:]
+    return " ".join(truncated_words)
+
+
+# -----------------------------------------------------------------------------
 # Public API expected by verl
 # -----------------------------------------------------------------------------
 
@@ -845,6 +963,7 @@ def compute_score(
     ground_truths: List[str | List[str]] | None = None,
     extra_infos: List[dict | None] | None = None,
     metric_profile: str = "default",
+    truncate_prefix_ratio: float = 0.0,
 ) -> float | List[float]:
     """Return lexical similarity score between *solution_str* and *ground_truth*.
 
@@ -888,12 +1007,22 @@ def compute_score(
         - **length_ratio**: Length ratio only
         - **lexical_ngram_coverage**: N-gram coverage by candidate only
         - **lexical_ngram_coverage_ref**: N-gram coverage by reference only
+        - **lexical_unique_ngram_coverage**: Unique n-gram coverage by candidate only
+        - **lexical_unique_ngram_coverage_ref**: Unique n-gram coverage by reference only
+        - **trio_v3_unique_ratio_penalty_1.50**: Trio v3 with unique n-gram coverage (prevents repetition)
+        - **trio_v3_unique_ratio_penalty_2.0**: Trio v3 with unique n-gram coverage and relaxed length penalty
         - **comprehensive**: All metrics with weighted average
         - Legacy names supported: **token_ratio**, **ordered_token**
         
         MIA weighting can be configured in metric profiles:
         - **use_mia_weighting**: Boolean to enable MIA weighting (default: False)
         - **mia_invert_weights**: Boolean to invert weights (1 - weight) (default: False)
+    truncate_prefix_ratio
+        Ratio of words to truncate from the beginning of ground_truth (0.0-1.0).
+        This prevents reward hacking by not giving credit for text the model was
+        already provided as an assistant prefix. Set to 0.25 to truncate the first
+        25% of words from ground_truth to match a 0.25 prefix ratio during generation.
+        Default: 0.0 (no truncation).
 
     Returns
     -------
@@ -952,6 +1081,31 @@ def compute_score(
     # Get num_workers and show_progress from config
     num_workers = int(config.get("num_workers", DEFAULT_NUM_WORKERS))
     show_progress = bool(config.get("show_progress", True))
+    
+    # Extract truncate_prefix_ratio: prioritize function parameter, then fall back to config
+    # This supports both direct passing via reward_kwargs and config-based passing
+    if truncate_prefix_ratio == 0.0:
+        truncate_prefix_ratio = float(config.get("truncate_prefix_ratio", 0.0))
+    
+    # Apply prefix truncation to ground_truth if configured
+    if truncate_prefix_ratio > 0.0:
+        # Handle single mode
+        if ground_truth is not None and isinstance(ground_truth, str):
+            ground_truth = _truncate_prefix_from_ground_truth(ground_truth, truncate_prefix_ratio)
+        elif ground_truth is not None and isinstance(ground_truth, list):
+            ground_truth = [_truncate_prefix_from_ground_truth(gt, truncate_prefix_ratio) for gt in ground_truth]
+        
+        # Handle batch mode
+        if ground_truths is not None:
+            truncated_gts = []
+            for gt in ground_truths:
+                if isinstance(gt, str):
+                    truncated_gts.append(_truncate_prefix_from_ground_truth(gt, truncate_prefix_ratio))
+                elif isinstance(gt, list):
+                    truncated_gts.append([_truncate_prefix_from_ground_truth(g, truncate_prefix_ratio) for g in gt])
+                else:
+                    truncated_gts.append(gt)
+            ground_truths = truncated_gts
 
     # ------------------------------------------------------------------
     # Dispatch between *single* and *batch* calling conventions.
