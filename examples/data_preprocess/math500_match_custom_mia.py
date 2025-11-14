@@ -1308,6 +1308,26 @@ def main():
         help="Dataset split to use for perturbed dataset (default: train)",
     )
     parser.add_argument(
+        "--nonmember_dataset_path",
+        default=None,
+        help="Optional HuggingFace dataset path for non-member data when using separate_dataset method",
+    )
+    parser.add_argument(
+        "--nonmember_dataset_split",
+        default=None,
+        help="Dataset split to use for non-member dataset (default: same as --dataset_split)",
+    )
+    parser.add_argument(
+        "--nonmember_transformed_dataset_path",
+        default=None,
+        help="Optional HuggingFace dataset path containing transformed ground truths for non-member dataset",
+    )
+    parser.add_argument(
+        "--nonmember_transformed_dataset_split",
+        default=None,
+        help="Dataset split to use for non-member transformed dataset (default: same as --nonmember_dataset_split)",
+    )
+    parser.add_argument(
         "--match_type",
         choices=["lexical", "embedding", "embedding_remote", "llm_judge", "llm_judge_remote", "bleurt"],
         default="lexical",
@@ -1401,13 +1421,14 @@ def main():
     )
     parser.add_argument(
         "--mia_nonmember_method",
-        choices=["random_pairing", "unused_examples", "perturbed_solution"],
+        choices=["random_pairing", "unused_examples", "perturbed_solution", "separate_dataset"],
         default="unused_examples",
         help=(
             "Method for creating non-member data: "
             "'random_pairing' (original method: randomly pair problems with solutions), "
             "'unused_examples' (safer method: use examples not seen during fine-tuning), "
-            "'perturbed_solution' (use perturbed solutions from external dataset)."
+            "'perturbed_solution' (use perturbed solutions from external dataset), "
+            "'separate_dataset' (use a completely separate dataset for non-members)."
         ),
     )
     parser.add_argument(
@@ -1646,6 +1667,17 @@ def main():
         if not os.path.exists(args.mia_weights_nonmembers):
             raise FileNotFoundError(f"MIA weights file not found: {args.mia_weights_nonmembers}")
     
+    # Validate separate_dataset method arguments
+    if args.mia and args.mia_nonmember_method == "separate_dataset":
+        if not args.nonmember_dataset_path:
+            raise ValueError("--nonmember_dataset_path is required when using --mia_nonmember_method separate_dataset")
+        # Set default split if not provided
+        if args.nonmember_dataset_split is None:
+            args.nonmember_dataset_split = args.dataset_split
+        # Set default transformed split if not provided
+        if args.nonmember_transformed_dataset_path and args.nonmember_transformed_dataset_split is None:
+            args.nonmember_transformed_dataset_split = args.nonmember_dataset_split
+    
     # Load dataset
     ds_full = datasets.load_dataset(args.dataset_path, split=args.dataset_split)
     
@@ -1708,6 +1740,29 @@ def main():
                 f"Transformed dataset size ({len(ds_transformed)}) does not match main dataset size ({len(ds_full)})"
             )
     
+    # Load separate non-member dataset if using separate_dataset method
+    ds_nonmember_full = None
+    ds_nonmember_transformed = None
+    if args.mia and args.mia_nonmember_method == "separate_dataset":
+        ds_nonmember_full = datasets.load_dataset(args.nonmember_dataset_path, split=args.nonmember_dataset_split)
+        if args.verbose:
+            print(f"[main] Loaded {len(ds_nonmember_full)} non-member examples from {args.nonmember_dataset_path} ({args.nonmember_dataset_split} split)")
+        
+        # Validate required fields
+        if len(ds_nonmember_full) > 0:
+            if "problem" not in ds_nonmember_full[0] or "solution" not in ds_nonmember_full[0]:
+                raise ValueError("Non-member dataset must have 'problem' and 'solution' fields")
+        
+        # Load non-member transformed dataset if provided
+        if args.nonmember_transformed_dataset_path:
+            ds_nonmember_transformed = datasets.load_dataset(args.nonmember_transformed_dataset_path, split=args.nonmember_transformed_dataset_split)
+            if args.verbose:
+                print(f"[main] Loaded {len(ds_nonmember_transformed)} transformed non-member examples from {args.nonmember_transformed_dataset_path} ({args.nonmember_transformed_dataset_split} split)")
+            if len(ds_nonmember_transformed) != len(ds_nonmember_full):
+                raise ValueError(
+                    f"Non-member transformed dataset size ({len(ds_nonmember_transformed)}) does not match non-member dataset size ({len(ds_nonmember_full)})"
+                )
+    
     # Load perturbed dataset if provided and using perturbed_solution method
     ds_perturbed = None
     if args.mia and args.mia_nonmember_method == "perturbed_solution":
@@ -1726,6 +1781,13 @@ def main():
     
     # Check if the requested subset size is valid for MIA
     total_dataset_size = len(ds_full)
+    if args.mia and args.mia_nonmember_method == "separate_dataset":
+        if args.subset_size > len(ds_nonmember_full):
+            raise ValueError(
+                f"For MIA with separate_dataset, member size ({args.subset_size}) cannot exceed "
+                f"the number of available non-member examples ({len(ds_nonmember_full)}). "
+                f"Please reduce subset_size to {len(ds_nonmember_full)} or less."
+            )
     if args.mia and args.mia_nonmember_method == "unused_examples":
         if args.filter_by_year:
             # With year filtering, we need to check if non-member pool has enough examples
@@ -1796,7 +1858,17 @@ def main():
     
     def transform_with_transformed(example, idx, augmented_solutions=None):
         transformed_sol = None
-        if ds_transformed is not None:
+        # Check if this is a non-member from separate dataset
+        is_separate_dataset_nonmember = example.get("from_separate_dataset", False)
+        
+        if is_separate_dataset_nonmember:
+            # For non-members from separate dataset, use non-member transformed dataset if available
+            if ds_nonmember_transformed is not None:
+                orig_idx = example.get("original_idx", idx)
+                if orig_idx < len(ds_nonmember_transformed):
+                    transformed_sol = ds_nonmember_transformed[orig_idx]["solution"]
+            # Otherwise, use original solution (no transformation)
+        elif ds_transformed is not None:
             # Get the original index - check multiple sources:
             # 1. If example has 'original_idx' field (for non-members from unused_examples)
             # 2. If example has 'original_solution_idx' field (for non-members from random_pairing/perturbed)
@@ -2030,6 +2102,41 @@ def main():
                     member_indices=member_indices
                 )
             final_member_indices = member_indices  # No subsampling needed
+        elif args.mia_nonmember_method == "separate_dataset":
+            print(f"Creating {len(ds_members_subset)} non-member examples from separate dataset...")
+            
+            # Sample non-members from the separate dataset to match member count
+            nonmember_rng = random.Random(args.subset_seed + 1)
+            if len(ds_nonmember_full) >= len(ds_members_subset):
+                selected_nonmember_indices = nonmember_rng.sample(range(len(ds_nonmember_full)), len(ds_members_subset))
+            else:
+                # If we have fewer non-members than members, use all of them
+                selected_nonmember_indices = list(range(len(ds_nonmember_full)))
+            
+            selected_nonmember_indices.sort()
+            
+            # Create non-member examples from selected indices
+            non_member_examples = []
+            for idx in selected_nonmember_indices:
+                ex = ds_nonmember_full[idx]
+                non_member_ex = {
+                    "problem": str(ex["problem"]).strip(),
+                    "solution": str(ex["solution"]).strip(),
+                    "answer": str(ex.get("answer", "")).strip(),
+                    "subject": str(ex.get("subject", "")).strip(),
+                    "level": ex.get("level", 0),
+                    "unique_id": str(ex.get("unique_id", "")).strip(),
+                    "original_idx": idx,  # Index in the separate dataset
+                    "is_member": False,
+                    "from_separate_dataset": True  # Flag to identify this source
+                }
+                non_member_examples.append(non_member_ex)
+            
+            final_member_indices = member_indices  # No subsampling needed
+            
+            if args.verbose:
+                print(f"[main] Created {len(non_member_examples)} non-member examples from separate dataset")
+                print(f"[main] Non-member indices: {selected_nonmember_indices[:10]}..." if len(selected_nonmember_indices) > 10 else f"[main] Non-member indices: {selected_nonmember_indices}")
         else:
             raise ValueError(f"Unknown non-member method: {args.mia_nonmember_method}")
         
@@ -2345,6 +2452,10 @@ def main():
                 row["original_idx"] = ex.get("original_idx", -1)
             elif args.mia_nonmember_method == "perturbed_solution":
                 row["pair_type"] = "perturbed"
+            elif args.mia_nonmember_method == "separate_dataset":
+                row["pair_type"] = "separate_dataset"
+                row["original_idx"] = ex.get("original_idx", -1)
+                row["nonmember_dataset_path"] = args.nonmember_dataset_path
             
             nonmembers_rows.append(row)
 
@@ -2385,6 +2496,18 @@ def main():
             nonmember_indices.sort()
             index_info["nonmember_indices"] = nonmember_indices
             index_info["nonmember_size"] = len(nonmember_indices)
+        elif args.mia_nonmember_method == "separate_dataset":
+            # Get non-member indices from separate dataset
+            nonmember_indices = [ex.get("original_idx") for ex in non_member_examples if "original_idx" in ex]
+            nonmember_indices = [idx for idx in nonmember_indices if idx is not None]
+            nonmember_indices.sort()
+            index_info["nonmember_indices"] = nonmember_indices
+            index_info["nonmember_size"] = len(nonmember_indices)
+            index_info["nonmember_dataset_path"] = args.nonmember_dataset_path
+            index_info["nonmember_dataset_split"] = args.nonmember_dataset_split
+            if args.nonmember_transformed_dataset_path:
+                index_info["nonmember_transformed_dataset_path"] = args.nonmember_transformed_dataset_path
+                index_info["nonmember_transformed_dataset_split"] = args.nonmember_transformed_dataset_split
         elif args.mia_nonmember_method in ["random_pairing", "perturbed_solution"]:
             # For these methods, store the problem and solution indices
             problem_indices = [ex.get("original_problem_idx") for ex in non_member_examples if "original_problem_idx" in ex]
