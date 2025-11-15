@@ -808,6 +808,17 @@ reward_model:
     # This prevents reward hacking by not giving credit for text already provided to the model
     # Set to 0.0 for no truncation (default), 0.25 to truncate first 25% of words
     truncate_prefix_ratio: 0.0
+    
+    # Enable budget forcing to truncate candidate solutions to match ground truth token count
+    # This prevents reward hacking by only rewarding tokens within the ground truth length
+    # Options: null (disabled, default), "tokenizer" (Qwen2.5-Math), "whitespace" (simple)
+    # Budget forcing truncates candidates to match ground truth length.
+    # Use with truncate_prefix_ratio to evaluate only the generated portion.
+    # Example: truncate_prefix_ratio=0.25 + budget_forcing=tokenizer
+    #   1. Removes first 25% from ground truth
+    #   2. Counts tokens in remaining 75%
+    #   3. Truncates candidate to match that count
+    budget_forcing: null
 
   # profiler configs
   profiler:
