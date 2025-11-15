@@ -956,6 +956,44 @@ def _truncate_prefix_from_ground_truth(ground_truth: str, truncate_ratio: float)
     return " ".join(truncated_words)
 
 
+def _truncate_to_budget(
+    text: str, 
+    budget: int, 
+    mode: str = "tokenizer"
+) -> str:
+    """Truncate text to match token budget.
+    
+    This prevents reward hacking by only evaluating tokens within the ground truth length.
+    Matches the budget forcing logic in reconstruction evaluation.
+    
+    Args:
+        text: The text to truncate (candidate solution)
+        budget: Maximum number of tokens to keep (from ground truth)
+        mode: Tokenization mode - "tokenizer" uses Qwen2.5-Math tokenizer,
+              "whitespace" uses simple whitespace splitting
+              
+    Returns:
+        Truncated text
+    """
+    if budget <= 0:
+        return ""
+    
+    if mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
+        # Use transformers tokenizer for precise token counting
+        tokens = _DEFAULT_TOKENIZER.tokenize(text)
+        if len(tokens) <= budget:
+            return text
+        # Truncate and decode back to text
+        truncated_tokens = tokens[:budget]
+        return _DEFAULT_TOKENIZER.convert_tokens_to_string(truncated_tokens)
+    else:
+        # Fallback to whitespace tokenization
+        words = text.split()
+        if len(words) <= budget:
+            return text
+        return " ".join(words[:budget])
+
+
 # -----------------------------------------------------------------------------
 # Public API expected by verl
 # -----------------------------------------------------------------------------
@@ -1115,6 +1153,9 @@ def compute_score(
                 else:
                     truncated_gts.append(gt)
             ground_truths = truncated_gts
+    
+    # Extract budget forcing mode from config
+    budget_forcing_mode = config.get("budget_forcing")
 
     # ------------------------------------------------------------------
     # Dispatch between *single* and *batch* calling conventions.
@@ -1165,6 +1206,21 @@ def compute_score(
                     all_references.append(ref)
                     pair_indices.append((sol_idx, len(all_candidates) - 1))
                     pair_refs.append(ref)
+            
+            # Apply budget forcing if configured
+            if budget_forcing_mode and all_candidates:
+                truncated_candidates = []
+                for cand, ref in zip(all_candidates, all_references):
+                    # Count tokens in reference (after prefix truncation)
+                    if budget_forcing_mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
+                        ref_budget = len(_DEFAULT_TOKENIZER.tokenize(ref))
+                    else:
+                        ref_budget = len(ref.split())
+                    
+                    # Truncate candidate to match reference budget
+                    truncated_candidates.append(_truncate_to_budget(cand, ref_budget, budget_forcing_mode))
+                
+                all_candidates = truncated_candidates
             
             # Compute all scores in parallel
             if all_candidates:
@@ -1232,6 +1288,21 @@ def compute_score(
                 pair_indices.append(sol_idx)
                 pair_refs.append(ref)
         
+        # Apply budget forcing if configured
+        if budget_forcing_mode and all_candidates:
+            truncated_candidates = []
+            for cand, ref in zip(all_candidates, all_references):
+                # Count tokens in reference (after prefix truncation)
+                if budget_forcing_mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
+                    ref_budget = len(_DEFAULT_TOKENIZER.tokenize(ref))
+                else:
+                    ref_budget = len(ref.split())
+                
+                # Truncate candidate to match reference budget
+                truncated_candidates.append(_truncate_to_budget(cand, ref_budget, budget_forcing_mode))
+            
+            all_candidates = truncated_candidates
+        
         # Batch process all filtered pairs in parallel
         if all_candidates:
             all_scores = _compute_scores_parallel(
@@ -1295,8 +1366,20 @@ def compute_score(
     metrics_to_compute = set(profile["metrics"])
 
     for ref in refs:
-        metrics = _compute_lexical_metrics(ref, solution_str, metrics_to_compute)
-        score = _aggregate_metrics(metrics, profile, ref, solution_str)
+        # Apply budget forcing if configured
+        current_solution = solution_str
+        if budget_forcing_mode:
+            # Count tokens in reference (after prefix truncation)
+            if budget_forcing_mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
+                ref_budget = len(_DEFAULT_TOKENIZER.tokenize(ref))
+            else:
+                ref_budget = len(ref.split())
+            
+            # Truncate solution to match reference budget
+            current_solution = _truncate_to_budget(solution_str, ref_budget, budget_forcing_mode)
+        
+        metrics = _compute_lexical_metrics(ref, current_solution, metrics_to_compute)
+        score = _aggregate_metrics(metrics, profile, ref, current_solution)
         if score > best_score:
             best_score = score
             best_ref = ref
