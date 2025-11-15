@@ -356,6 +356,15 @@ METRIC_PROFILES = {
         "mia_invert_weights": True,  # Lower MIA → higher weight
         "mia_weighting_mode": "quadratic"
     },
+    "lexical_unique_ngram_coverage_ref_ratio_1.50_mia_quadratic": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_weighting": True,
+        "mia_invert_weights": True,
+        "mia_weighting_mode": "quadratic"
+    },
     "trio_v3_ratio_penalty_1.50_mia_contrastive_0.3": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
