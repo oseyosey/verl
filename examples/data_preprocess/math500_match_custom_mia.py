@@ -1175,6 +1175,69 @@ def extract_year_from_url(url: str) -> int:
     return None
 
 
+def normalize_dataset_format(dataset, verbose: bool = False):
+    """Normalize dataset format by extracting problem/solution from messages if needed.
+    
+    If dataset has 'messages' field instead of 'problem'/'solution', extracts them.
+    Otherwise, returns dataset as-is.
+    
+    Args:
+        dataset: The dataset to normalize
+        verbose: Whether to print debug information
+        
+    Returns:
+        Normalized dataset with 'problem' and 'solution' fields
+    """
+    if len(dataset) == 0:
+        return dataset
+    
+    # Check if dataset already has problem/solution fields
+    if "problem" in dataset[0] and "solution" in dataset[0]:
+        if verbose:
+            print("[normalize_dataset_format] Dataset already has problem/solution fields, no normalization needed")
+        return dataset
+    
+    # Check if dataset has messages field
+    if "messages" not in dataset[0]:
+        raise ValueError("Dataset must have either 'problem'/'solution' fields or 'messages' field")
+    
+    if verbose:
+        print("[normalize_dataset_format] Converting messages format to problem/solution format")
+    
+    def extract_from_messages(example):
+        """Extract problem and solution from messages field."""
+        messages = example.get("messages", [])
+        problem = ""
+        solution = ""
+        
+        for msg in messages:
+            role = msg.get("role", "")
+            content = str(msg.get("content", "")).strip()
+            if role == "user":
+                problem = content
+            elif role == "assistant":
+                solution = content
+        
+        # Create new example with problem and solution fields
+        new_example = dict(example)
+        new_example["problem"] = problem
+        new_example["solution"] = solution
+        
+        return new_example
+    
+    # Apply normalization to all examples
+    normalized_dataset = dataset.map(extract_from_messages)
+    
+    if verbose:
+        print(f"[normalize_dataset_format] Normalized {len(normalized_dataset)} examples")
+        if len(normalized_dataset) > 0:
+            sample = normalized_dataset[0]
+            print(f"[normalize_dataset_format] Sample problem length: {len(sample.get('problem', ''))}")
+            print(f"[normalize_dataset_format] Sample solution length: {len(sample.get('solution', ''))}")
+    
+    return normalized_dataset
+
+
 def filter_dataset_by_years(dataset, years: List[int], verbose: bool = False):
     """Filter dataset to only include examples from specified years.
     
@@ -1198,6 +1261,32 @@ def filter_dataset_by_years(dataset, years: List[int], verbose: bool = False):
     
     if len(filtered_indices) == 0:
         raise ValueError(f"No examples found for years {years}. Check that the dataset has 'url' field with year information.")
+    
+    return dataset.select(filtered_indices), filtered_indices
+
+
+def filter_dataset_by_source(dataset, sources: List[str], verbose: bool = False):
+    """Filter dataset to only include examples from specified sources.
+    
+    Args:
+        dataset: The dataset to filter (must have 'source' field)
+        sources: List of source names to include
+        verbose: Whether to print debug information
+        
+    Returns:
+        Tuple of (filtered_dataset, filtered_indices)
+    """
+    filtered_indices = []
+    for idx in range(len(dataset)):
+        if "source" in dataset[idx]:
+            if dataset[idx]["source"] in sources:
+                filtered_indices.append(idx)
+    
+    if verbose:
+        print(f"[filter_dataset_by_source] Filtered {len(filtered_indices)} examples from sources {sources} out of {len(dataset)} total")
+    
+    if len(filtered_indices) == 0:
+        raise ValueError(f"No examples found for sources {sources}. Check that the dataset has 'source' field. Available sources: {set(dataset['source'][:1000]) if len(dataset) > 0 and 'source' in dataset[0] else 'N/A'}")
     
     return dataset.select(filtered_indices), filtered_indices
 
@@ -1623,6 +1712,13 @@ def main():
         default=[2021, 2022, 2023, 2024],
         help="List of years to use for member data (default: [2021, 2022, 2023, 2024]). Only used when --filter_by_year is enabled.",
     )
+    parser.add_argument(
+        "--source_filter",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Filter dataset by specific source(s) (e.g., ai2-adapt-dev/numinamath_tir_math_decontaminated). Requires dataset with 'source' field.",
+    )
 
     args = parser.parse_args()
 
@@ -1684,6 +1780,25 @@ def main():
     if args.verbose:
         print(f"[main] Loaded {len(ds_full)} examples from {args.dataset_path} ({args.dataset_split} split)")
     
+    # Normalize dataset format (convert messages to problem/solution if needed)
+    ds_full = normalize_dataset_format(ds_full, verbose=args.verbose)
+    
+    # Apply source filtering if enabled
+    if args.source_filter is not None and len(args.source_filter) > 0:
+        print("\n=== Source-based Filtering Enabled ===")
+        print(f"Source filter: {args.source_filter}")
+        
+        # Check if dataset has 'source' field
+        if len(ds_full) > 0 and "source" not in ds_full[0]:
+            raise ValueError("--source_filter requires dataset to have 'source' field, but it was not found")
+        
+        ds_full, source_filtered_indices = filter_dataset_by_source(
+            ds_full, args.source_filter, verbose=args.verbose
+        )
+        
+        if args.verbose:
+            print(f"[main] Source filtering: {len(ds_full)} examples from sources {args.source_filter}")
+    
     # Apply year-based filtering if enabled
     member_pool_indices = None
     nonmember_pool_indices = None
@@ -1735,6 +1850,8 @@ def main():
         ds_transformed = datasets.load_dataset(args.transformed_dataset_path, split=args.transformed_dataset_split)
         if args.verbose:
             print(f"[main] Loaded {len(ds_transformed)} transformed examples from {args.transformed_dataset_path} ({args.transformed_dataset_split} split)")
+        # Normalize transformed dataset format
+        ds_transformed = normalize_dataset_format(ds_transformed, verbose=args.verbose)
         if len(ds_transformed) != len(ds_full):
             raise ValueError(
                 f"Transformed dataset size ({len(ds_transformed)}) does not match main dataset size ({len(ds_full)})"
@@ -1748,16 +1865,21 @@ def main():
         if args.verbose:
             print(f"[main] Loaded {len(ds_nonmember_full)} non-member examples from {args.nonmember_dataset_path} ({args.nonmember_dataset_split} split)")
         
-        # Validate required fields
+        # Normalize non-member dataset format
+        ds_nonmember_full = normalize_dataset_format(ds_nonmember_full, verbose=args.verbose)
+        
+        # Validate required fields (after normalization)
         if len(ds_nonmember_full) > 0:
             if "problem" not in ds_nonmember_full[0] or "solution" not in ds_nonmember_full[0]:
-                raise ValueError("Non-member dataset must have 'problem' and 'solution' fields")
+                raise ValueError("Non-member dataset must have 'problem' and 'solution' fields after normalization")
         
         # Load non-member transformed dataset if provided
         if args.nonmember_transformed_dataset_path:
             ds_nonmember_transformed = datasets.load_dataset(args.nonmember_transformed_dataset_path, split=args.nonmember_transformed_dataset_split)
             if args.verbose:
                 print(f"[main] Loaded {len(ds_nonmember_transformed)} transformed non-member examples from {args.nonmember_transformed_dataset_path} ({args.nonmember_transformed_dataset_split} split)")
+            # Normalize non-member transformed dataset format
+            ds_nonmember_transformed = normalize_dataset_format(ds_nonmember_transformed, verbose=args.verbose)
             if len(ds_nonmember_transformed) != len(ds_nonmember_full):
                 raise ValueError(
                     f"Non-member transformed dataset size ({len(ds_nonmember_transformed)}) does not match non-member dataset size ({len(ds_nonmember_full)})"
@@ -1771,6 +1893,8 @@ def main():
         ds_perturbed = datasets.load_dataset(args.perturbed_dataset_path, split=args.perturbed_dataset_split)
         if args.verbose:
             print(f"[main] Loaded {len(ds_perturbed)} perturbed examples from {args.perturbed_dataset_path} ({args.perturbed_dataset_split} split)")
+        # Normalize perturbed dataset format
+        ds_perturbed = normalize_dataset_format(ds_perturbed, verbose=args.verbose)
         if len(ds_perturbed) != len(ds_full):
             raise ValueError(
                 f"Perturbed dataset size ({len(ds_perturbed)}) does not match main dataset size ({len(ds_full)})"
