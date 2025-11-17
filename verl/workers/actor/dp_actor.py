@@ -63,6 +63,9 @@ class DataParallelPPOActor(BasePPOActor):
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
         if torch.distributed.get_rank() == 0:
             print(f"Actor use_fused_kernels={self.use_fused_kernels}")
+        
+        # Flag to track first MIA-weighted loss logging
+        self._mia_weighted_loss_first_log = True
 
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
@@ -338,6 +341,9 @@ class DataParallelPPOActor(BasePPOActor):
             select_keys.append("loss_mask")
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
+        # Include prompt_weights if available (for MIA-weighted loss)
+        if "prompt_weights" in data.batch:
+            select_keys.append("prompt_weights")
         batch = data.select(batch_keys=select_keys).batch
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
 
@@ -385,6 +391,24 @@ class DataParallelPPOActor(BasePPOActor):
 
                     old_log_prob = data["old_log_probs"]
                     advantages = data["advantages"]
+                    
+                    # Extract prompt_weights if available (for MIA-weighted loss)
+                    prompt_weights = data.get("prompt_weights", None)
+                    
+                    #? DEBUG: Check if prompt_weights exist (only on first training step)
+                    # import pdb
+                    # pdb.set_trace()
+                    # if prompt_weights is not None:
+                    #     print("\n" + "="*80)
+                    #     print("✅ ACTOR CHECKPOINT: Received prompt_weights")
+                    #     print("="*80)
+                    #     print(f"   Shape: {prompt_weights.shape}")
+                    #     print(f"   Device: {prompt_weights.device}")
+                    #     print(f"   Stats - mean: {prompt_weights.mean().item():.4f}, std: {prompt_weights.std().item():.4f}")
+                    #     print(f"   Sample weights (first 10): {prompt_weights[:10].tolist()}")
+                    #     print("="*80 + "\n")
+                    #     self._mia_weighted_loss_first_log = False
+                    #     pdb.set_trace()  # Hit breakpoint to verify weights are applied
 
                     clip_ratio = self.config.clip_ratio
                     clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
@@ -412,10 +436,13 @@ class DataParallelPPOActor(BasePPOActor):
                             cliprange_high=clip_ratio_high,
                             clip_ratio_c=clip_ratio_c,
                             loss_agg_mode=loss_agg_mode,
+                            prompt_weights=prompt_weights,
                         )
                     else:
                         policy_loss_fn = get_policy_loss_fn(loss_mode)
-                        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(old_log_prob, log_prob, advantages, response_mask, loss_agg_mode, self.config)
+                        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(
+                            old_log_prob, log_prob, advantages, response_mask, loss_agg_mode, self.config, prompt_weights=prompt_weights
+                        )
 
                     if entropy_coeff != 0:
                         entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)

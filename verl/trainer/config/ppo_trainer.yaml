@@ -857,6 +857,18 @@ algorithm:
   # Whether to normalize advantages by std (specific to GRPO)
   norm_adv_by_std_in_grpo: True
 
+  # Whether to enable MIA-weighted loss (for membership inference attack optimization)
+  # When enabled, prompts with higher MIA weights receive stronger gradient updates
+  use_mia_weighted_loss: False
+
+  # MIA weight transformation mode: "linear", "quadratic", or "exponential"
+  # "quadratic" creates stronger gradient separation (recommended for MIA optimization)
+  mia_weighting_mode: linear
+
+  # Whether to invert MIA weights before transformation (compute 1 - weight)
+  # Set to True if lower MIA scores indicate higher membership likelihood
+  mia_invert_weights: False
+
   # Whether to enable in-reward KL penalty
   use_kl_in_reward: False
 

@@ -59,6 +59,8 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 
+import pdb
+
 WorkerType = Type[Worker]
 
 
@@ -178,6 +180,10 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
+# Module-level flag to track first MIA-weighted loss logging
+_mia_weighted_loss_first_log = True
+
+
 def compute_response_mask(data: DataProto):
     """Compute the attention mask for the response part of the sequence.
 
@@ -271,6 +277,81 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns = adv_estimator_fn(**adv_kwargs)
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+    
+    # pdb.set_trace()
+    # MIA-weighted loss: Extract and transform MIA weights if enabled
+    if config is not None and config.get("use_mia_weighted_loss", False):
+        # Extract MIA weights from extra_info array if available
+        # MIA weights are stored in data.non_tensor_batch["extra_info"][i]["mia_weight"]
+        mia_weights_list = None
+        if "extra_info" in data.non_tensor_batch:
+            # extra_info is an array of dicts, one per sample
+            extra_info_array = data.non_tensor_batch["extra_info"]
+            mia_weights_list = []
+            
+            for i, extra_info_dict in enumerate(extra_info_array):
+                if isinstance(extra_info_dict, dict) and "mia_weight" in extra_info_dict:
+                    mia_weights_list.append(extra_info_dict["mia_weight"])
+                else:
+                    # If MIA weight not found, use None (will be handled below)
+                    mia_weights_list.append(None)
+            
+            # Check if we found any valid MIA weights
+            if any(w is not None for w in mia_weights_list):
+                # Replace None values with mean of valid weights
+                valid_weights = [w for w in mia_weights_list if w is not None]
+                if valid_weights:
+                    mean_weight = sum(valid_weights) / len(valid_weights)
+                    mia_weights_list = [w if w is not None else mean_weight for w in mia_weights_list]
+                
+                # Create numpy array for compatibility
+                import numpy as np
+                mia_weights_array = np.array(mia_weights_list, dtype=np.float32)
+                
+                # Store at top level for easy access
+                data.non_tensor_batch["mia_weight"] = mia_weights_array
+        
+        # Check if MIA weights are available (now at top level or extracted from extra_info)
+        if "mia_weight" in data.non_tensor_batch:
+            import torch
+            mia_weights = data.non_tensor_batch["mia_weight"]
+            
+            # Convert to tensor if it's a numpy array
+            if not isinstance(mia_weights, torch.Tensor):
+                mia_weights = torch.tensor(mia_weights, dtype=torch.float32)
+            
+            # Get transformation parameters from config
+            mia_mode = config.get("mia_weighting_mode", "linear")
+            mia_invert = config.get("mia_invert_weights", False)
+            
+            # Transform the weights
+            transformed_weights = core_algos.transform_mia_weights(
+                mia_weights=mia_weights,
+                mode=mia_mode,
+                invert=mia_invert
+            )
+            
+            # Store transformed weights in batch for use during policy update
+            data.batch["prompt_weights"] = transformed_weights
+            
+            # Log statistics for debugging (only on first training step)
+            global _mia_weighted_loss_first_log
+            if _mia_weighted_loss_first_log:
+                print("\n" + "="*80)
+                print("✅ MIA-WEIGHTED LOSS ACTIVATED")
+                print("="*80)
+                print(f"   Mode: {mia_mode}")
+                print(f"   Invert weights: {mia_invert}")
+                print(f"   Batch size: {len(transformed_weights)}")
+                print(f"   Weight stats:")
+                print(f"     - Mean: {transformed_weights.mean().item():.4f}")
+                print(f"     - Std:  {transformed_weights.std().item():.4f}")
+                print(f"     - Min:  {transformed_weights.min().item():.4f}")
+                print(f"     - Max:  {transformed_weights.max().item():.4f}")
+                print(f"   Sample weights (first 10): {transformed_weights[:10].tolist()}")
+                print("="*80 + "\n")
+                _mia_weighted_loss_first_log = False
+    
     return data
 
 
