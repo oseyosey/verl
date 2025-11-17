@@ -289,38 +289,38 @@ METRIC_PROFILES = {
         "metrics": ["lexical_lcs_ratio"],
         "weights": [1.0]
     },
-    "lexical_unique_ngram_coverage_ref_ratio_penalty_1.50": {
+    "lexical_unique_ngram_coverage_ref_ratio_1.50": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
     },
-    "lexical_unique_ngram_coverage_ref_ratio_penalty_2.0": {
+    "lexical_unique_ngram_coverage_ref_ratio_2.0": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 2.0,
     },
-    "lexical_token_overlap_ref_ratio_penalty_1.50": {
+    "lexical_token_overlap_ref_ratio_1.50": {
         "metrics": ["lexical_token_overlap_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
     },
-    "lexical_lcs_ratio_ratio_penalty_1.50": {
+    "lexical_lcs_ratio_ratio_1.50": {
         "metrics": ["lexical_lcs_ratio"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
     },
-    "lexical_lcs_ratio_cand_ratio_penalty_1.50": {
+    "lexical_lcs_ratio_cand_ratio_1.50": {
         "metrics": ["lexical_lcs_ratio_cand"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
     },
     # MIA-weighted profiles (examples)
-    "trio_v1_ratio_penalty_1.25_mia": {
+    "trio_v1_ratio_1.25_mia": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
@@ -1011,6 +1011,7 @@ def compute_score(
     extra_infos: List[dict | None] | None = None,
     metric_profile: str = "default",
     truncate_prefix_ratio: float = 0.0,
+    budget_forcing: str | None = None,
 ) -> float | List[float]:
     """Return lexical similarity score between *solution_str* and *ground_truth*.
 
@@ -1041,6 +1042,8 @@ def compute_score(
         - nonmember_ground_truth: Non-member ground truth string (perturbed_solution mode)
         - mia_weighting_mode: MIA weighting strategy ("linear", "quadratic", "contrastive")
         - mia_contrastive_alpha: Penalty coefficient for contrastive mode (default: 0.5)
+        - truncate_prefix_ratio: Ratio of words to truncate from ground truth (0.0-1.0)
+        - budget_forcing: Budget forcing mode ("tokenizer" or "whitespace") to truncate candidates
     metric_profile
         The metric profile to use. Available options:
         - **default**: Average of token_overlap, lcs_ratio_cand, ngram_coverage (may favor short outputs)
@@ -1070,6 +1073,12 @@ def compute_score(
         already provided as an assistant prefix. Set to 0.25 to truncate the first
         25% of words from ground_truth to match a 0.25 prefix ratio during generation.
         Default: 0.0 (no truncation).
+    budget_forcing
+        Budget forcing mode to truncate candidate solutions to match ground truth
+        token count. Options: None (disabled, default), "tokenizer" (Qwen2.5-Math),
+        "whitespace" (simple word splitting). When enabled, only evaluates/rewards
+        tokens within the ground truth length, preventing reward hacking for
+        generating beyond the expected length. Works in sync with truncate_prefix_ratio.
 
     Returns
     -------
@@ -1154,8 +1163,12 @@ def compute_score(
                     truncated_gts.append(gt)
             ground_truths = truncated_gts
     
-    # Extract budget forcing mode from config
-    budget_forcing_mode = config.get("budget_forcing")
+    # Extract budget forcing mode: prioritize function parameter, then fall back to config
+    # This supports both direct passing via reward_kwargs and config-based passing
+    if budget_forcing is None:
+        budget_forcing_mode = config.get("budget_forcing")
+    else:
+        budget_forcing_mode = budget_forcing
 
     # ------------------------------------------------------------------
     # Dispatch between *single* and *batch* calling conventions.

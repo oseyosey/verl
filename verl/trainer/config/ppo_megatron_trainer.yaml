@@ -346,6 +346,9 @@ algorithm:
   lam: 1.0
   adv_estimator: gae
   norm_adv_by_std_in_grpo: True
+  use_mia_weighted_loss: False  # Enable MIA-weighted loss for membership inference optimization
+  mia_weighting_mode: linear  # Options: "linear", "quadratic", "exponential"
+  mia_invert_weights: False  # Set to True if lower MIA scores = higher membership
   use_kl_in_reward: False
   kl_penalty: kl  # how to estimate kl divergence
   kl_ctrl:

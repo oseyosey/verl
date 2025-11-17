@@ -271,6 +271,9 @@ class MegatronPPOActor(BasePPOActor):
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
+        # Include prompt_weights if available (for MIA-weighted loss)
+        if "prompt_weights" in data.batch:
+            select_keys.append("prompt_weights")
         self.has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         if self.has_multi_modal_inputs:
             data = data.select(select_keys, ["multi_modal_inputs"])
@@ -351,6 +354,9 @@ class MegatronPPOActor(BasePPOActor):
             if not forward_only:
                 old_log_prob = data["old_log_probs"]
                 advantages = data["advantages"]
+                
+                # Extract prompt_weights if available (for MIA-weighted loss)
+                prompt_weights = data.get("prompt_weights", None)
 
                 clip_ratio = self.config.clip_ratio
                 clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
@@ -372,10 +378,13 @@ class MegatronPPOActor(BasePPOActor):
                         cliprange_high=clip_ratio_high,
                         clip_ratio_c=clip_ratio_c,
                         loss_agg_mode=loss_agg_mode,
+                        prompt_weights=prompt_weights,
                     )
                 else:
                     policy_loss_fn = get_policy_loss_fn(loss_mode)
-                    pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(old_log_prob, log_prob, advantages, response_mask, loss_agg_mode, self.config)
+                    pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(
+                        old_log_prob, log_prob, advantages, response_mask, loss_agg_mode, self.config, prompt_weights=prompt_weights
+                    )
                 policy_loss = pg_loss
             if calculate_entropy:
                 entropy = output["entropy"][:, -response_length - 1 : -1].contiguous()
