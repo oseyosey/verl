@@ -34,6 +34,25 @@ The module supports MIA (Membership Inference Attack) weighting for RL training:
 - Handles both simple mode (``mia_weight``) and complex mode (``member_mia_weight``, ``nonmember_mia_weight``)
 - Weights are extracted from ``extra_info`` and applied to final scores
 
+MIA Adaptive Matching
+~~~~~~~~~~~~~~~~~~~~~~
+The module supports MIA-adaptive matching that gates which ground truths contribute to the reward:
+- Configure via ``use_mia_adaptive_matching``, ``mia_invert_weights``, and ``mia_adaptive_mode`` in metric profiles
+- Interpolates between best-match reward (c_max) and average reward (c_avg) based on MIA weight
+- Formula: ``r = p * c_max + (1 - p) * c_avg`` where ``p`` is transformed based on mode:
+  
+  - ``linear`` (default): ``p = (1 - mia_weight)`` if invert is enabled
+  - ``quadratic``: ``p = p^2`` for stronger gradient between members/non-members (81x vs 9x)
+
+- High MIA weight examples (members) get reward dominated by best match (usually correct ground truth)
+- Low MIA weight examples (non-members) get noisy averaged reward, making them harder to optimize
+- Requires multiple ground truths in ``target_gt`` (typically from augmentation)
+- Mutually exclusive with ``use_mia_weighting``
+
+This feature enables a deterministic gating mechanism where member-like examples receive
+strong supervision signals while non-member-like examples receive noisy, low-SNR signals,
+effectively implementing selective memorization during RL training.
+
 Example
 ~~~~~~~
 >>> from verl.utils.reward_score.lexical import compute_score
@@ -63,6 +82,16 @@ Example
 ...     metric_profile="duo_v2_ratio_penalty_1.25_mia"
 ... )
 0.666...
+
+>>> # Using MIA adaptive matching with multiple ground truths
+>>> compute_score(
+...     data_source="dummy",
+...     solution_str="Cats are great pets.",
+...     ground_truth=["Cats are great pets.", "Dogs are loyal friends.", "Birds can fly."],
+...     extra_info={"mia_weight": 0.1, "target_gt": ["Cats are great pets.", "Dogs are loyal friends.", "Birds can fly."]},
+...     metric_profile="lexical_unique_ngram_coverage_ref_ratio_1.50_mia_adaptive"
+... )
+0.95...  # High score due to low mia_weight (0.1) -> high p (0.9) -> dominated by max match
 """
 
 import pdb  # * Hacky way to debug the verl codebase (ray cluster)
@@ -313,12 +342,6 @@ METRIC_PROFILES = {
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
     },
-    "lexical_lcs_ratio_cand_ratio_1.50": {
-        "metrics": ["lexical_lcs_ratio_cand"],
-        "weights": [1.0],
-        "length_penalty_type": "ratio",
-        "length_threshold": 1.50,
-    },
     # MIA-weighted profiles (examples)
     "trio_v1_ratio_1.25_mia": {
         "metrics": ["lexical_token_overlap", "lexical_lcs_ratio_cand", "lexical_ngram_coverage"],
@@ -338,15 +361,6 @@ METRIC_PROFILES = {
         "mia_invert_weights": True,  # Lower MIA → higher weight
         "mia_weighting_mode": "linear"
     },
-    "trio_v3_ratio_penalty_1.50_mia_quadratic": {
-        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
-        "weights": [1.0, 1.0, 1.0],
-        "length_penalty_type": "ratio",
-        "length_threshold": 1.50,
-        "use_mia_weighting": True,
-        "mia_invert_weights": True,  # Lower MIA → higher weight
-        "mia_weighting_mode": "quadratic"
-    },
     "trio_v3_unique_ratio_penalty_1.50_mia_quadratic": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
@@ -365,25 +379,33 @@ METRIC_PROFILES = {
         "mia_invert_weights": True,
         "mia_weighting_mode": "quadratic"
     },
-    "trio_v3_ratio_penalty_1.50_mia_contrastive_0.3": {
-        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
-        "weights": [1.0, 1.0, 1.0],
+    # MIA Adaptive Matching profiles (interpolate between max and avg based on MIA weight)
+    "lexical_unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
-        "use_mia_weighting": True,
+        "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
-        "mia_weighting_mode": "contrastive",
-        "mia_contrastive_alpha": 0.3
+        "mia_adaptive_mode": "linear"  # Default mode
     },
-    "trio_v3_ratio_penalty_1.50_mia_contrastive_0.5": {
-        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_ngram_coverage_ref"],
+    "lexical_unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match_quadratic": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_adaptive_matching": True,
+        "mia_invert_weights": True,
+        "mia_adaptive_mode": "quadratic"  # Amplify differences between members/non-members
+    },
+    "trio_v3_unique_ratio_1.50_mia_adaptive_match_quadratic": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
-        "use_mia_weighting": True,
-        "mia_invert_weights": True,
-        "mia_weighting_mode": "contrastive",
-        "mia_contrastive_alpha": 0.5
+        "use_mia_adaptive_matching": True,
+        "mia_invert_weights": True,  # Lower MIA → higher weight
+        "mia_adaptive_mode": "quadratic"
     },
 }
 
@@ -884,6 +906,71 @@ def _apply_mia_weighting(
         return score * mia_weight
 
 
+def _apply_mia_adaptive_matching(
+    ref_scores: List[float],
+    mia_weight: float,
+    invert_weights: bool = True,
+    mode: str = "linear"
+) -> float:
+    """Apply MIA-adaptive matching: interpolate between max and avg.
+    
+    This implements a deterministic gating mechanism where high MIA weight examples
+    receive reward dominated by their best matching reference (typically the correct
+    ground truth), while low MIA weight examples receive noisy averaged reward.
+    
+    Formula: r = p * c_max + (1 - p) * c_avg
+    where p is transformed based on mode:
+    - linear: p = (1 - mia_weight) if invert else mia_weight
+    - quadratic: p = p^2 for stronger gradient between members/non-members
+    
+    Args:
+        ref_scores: List of scores for different ground truths
+        mia_weight: Raw MIA weight from extra_info (lower = more likely member)
+        invert_weights: If True, use (1 - mia_weight) as mixture coefficient
+                       (default: True, since lower MIA score means more likely member)
+        mode: Weighting mode - "linear" or "quadratic" (default: "linear")
+    
+    Returns:
+        Interpolated reward between max and average scores
+        
+    Example:
+        >>> # High MIA weight (member-like, p=0.9 after inversion)
+        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.1, invert_weights=True)
+        0.77  # Close to max (0.8)
+        
+        >>> # Low MIA weight (non-member-like, p=0.1 after inversion)
+        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.9, invert_weights=True)
+        0.58  # Close to avg (0.533)
+        
+        >>> # Quadratic mode amplifies differences
+        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.1, invert_weights=True, mode="quadratic")
+        0.76  # p^2 = 0.81, even closer to max
+    """
+    if not ref_scores:
+        return 0.0
+    
+    c_max = max(ref_scores)
+    c_avg = sum(ref_scores) / len(ref_scores)
+    
+    # Invert if needed (lower MIA score -> higher weight for member-like)
+    p = (1.0 - mia_weight) if invert_weights else mia_weight
+    
+    # Apply transformation based on mode
+    if mode == "linear":
+        pass  # p remains as is
+    elif mode == "quadratic":
+        # Amplify differences: members (p~0.9) → 0.81, non-members (p~0.1) → 0.01
+        # Creates 81x gradient ratio instead of 9x with linear
+        p = p ** 2
+    else:
+        warnings.warn(f"Unknown MIA adaptive matching mode: {mode}, using linear")
+    
+    # Interpolate between max and average
+    # High p (member-like): dominated by c_max
+    # Low p (non-member-like): dominated by c_avg
+    return p * c_max + (1.0 - p) * c_avg
+
+
 # -----------------------------------------------------------------------------
 # Utility: filter reference list based on *extra_info*
 # -----------------------------------------------------------------------------
@@ -1134,6 +1221,29 @@ def compute_score(
     if "length_threshold" in config:
         profile["length_threshold"] = float(config["length_threshold"])
     
+    # Validation checks for MIA features
+    if profile.get("use_mia_adaptive_matching", False) and profile.get("use_mia_weighting", False):
+        warnings.warn(
+            "Both use_mia_adaptive_matching and use_mia_weighting are enabled. "
+            "These features are mutually exclusive. use_mia_adaptive_matching will take precedence.",
+            RuntimeWarning
+        )
+    
+    # Check if adaptive matching has multiple ground truths (only in single mode, batch mode is checked per sample)
+    if profile.get("use_mia_adaptive_matching", False) and ground_truth is not None:
+        # Check if ground_truth is a single string or if target_gt in extra_info is a single string
+        gt_is_single = isinstance(ground_truth, str)
+        target_gt = config.get("target_gt") if config else None
+        target_gt_is_single = isinstance(target_gt, str)
+        
+        if gt_is_single and (target_gt is None or target_gt_is_single):
+            warnings.warn(
+                "use_mia_adaptive_matching is enabled but only a single ground truth is provided. "
+                "Adaptive matching works best with multiple ground truths (e.g., from augment_target_gt). "
+                "Consider providing a list of ground truths or using target_gt in extra_info.",
+                RuntimeWarning
+            )
+    
     # Get num_workers and show_progress from config
     num_workers = int(config.get("num_workers", DEFAULT_NUM_WORKERS))
     show_progress = bool(config.get("show_progress", True))
@@ -1243,8 +1353,46 @@ def compute_score(
                     desc=f"Lexical rewards ({len(sols)} samples, {len(all_candidates)} pairs)"
                 )
                 
-                # Apply MIA weighting if configured
-                if profile.get("use_mia_weighting", False):
+                # Apply MIA adaptive matching if configured
+                if profile.get("use_mia_adaptive_matching", False):
+                    mia_invert = profile.get("mia_invert_weights", True)  # Default True for adaptive matching
+                    mia_adaptive_mode = profile.get("mia_adaptive_mode", "linear")  # Default linear
+                    
+                    # Group scores by solution and apply adaptive matching
+                    results = []
+                    for sol_idx in range(len(sols)):
+                        sol_scores = [
+                            all_scores[pair_idx] 
+                            for s_idx, pair_idx in pair_indices 
+                            if s_idx == sol_idx and pair_idx >= 0
+                        ]
+                        
+                        if not sol_scores:
+                            results.append(0.0)
+                            continue
+                        
+                        # Get extra_info for this solution
+                        ei = defaults[sol_idx] if sol_idx < len(defaults) else None
+                        
+                        # Extract MIA weight (using first reference for consistency)
+                        first_ref_for_sol = None
+                        for s_idx, pair_idx in pair_indices:
+                            if s_idx == sol_idx and pair_idx >= 0:
+                                first_ref_for_sol = pair_refs[pair_idx]
+                                break
+                        
+                        mia_weight = _extract_mia_weight(first_ref_for_sol, ei) if first_ref_for_sol else None
+                        
+                        if mia_weight is not None:
+                            # Apply adaptive matching: interpolate between max and avg
+                            adaptive_score = _apply_mia_adaptive_matching(sol_scores, mia_weight, mia_invert, mia_adaptive_mode)
+                            results.append(adaptive_score)
+                        else:
+                            # No MIA weight available, fall back to max
+                            results.append(max(sol_scores))
+                
+                # Apply MIA weighting if configured (mutually exclusive with adaptive matching)
+                elif profile.get("use_mia_weighting", False):
                     mia_mode = profile.get("mia_weighting_mode", "linear")
                     mia_invert = profile.get("mia_invert_weights", False)
                     contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
@@ -1260,17 +1408,29 @@ def compute_score(
                             all_scores[i] = _apply_mia_weighting(
                                 all_scores[i], mia_weight, mia_mode, mia_invert, contrastive_alpha
                             )
+                    
+                    # Group scores by solution and take maximum
+                    results = []
+                    for sol_idx in range(len(sols)):
+                        sol_scores = [
+                            all_scores[pair_idx] 
+                            for s_idx, pair_idx in pair_indices 
+                            if s_idx == sol_idx and pair_idx >= 0
+                        ]
+                        best_score = max(sol_scores) if sol_scores else 0.0
+                        results.append(best_score)
                 
-                # Group scores by solution and take maximum
-                results = []
-                for sol_idx in range(len(sols)):
-                    sol_scores = [
-                        all_scores[pair_idx] 
-                        for s_idx, pair_idx in pair_indices 
-                        if s_idx == sol_idx and pair_idx >= 0
-                    ]
-                    best_score = max(sol_scores) if sol_scores else 0.0
-                    results.append(best_score)
+                else:
+                    # No MIA processing, just take maximum
+                    results = []
+                    for sol_idx in range(len(sols)):
+                        sol_scores = [
+                            all_scores[pair_idx] 
+                            for s_idx, pair_idx in pair_indices 
+                            if s_idx == sol_idx and pair_idx >= 0
+                        ]
+                        best_score = max(sol_scores) if sol_scores else 0.0
+                        results.append(best_score)
                 
                 return results
             else:
@@ -1324,8 +1484,50 @@ def compute_score(
                 desc=f"Lexical rewards (filtered, {len(sols)} samples, {len(all_candidates)} pairs)"
             )
             
-            # Apply MIA weighting if configured
-            if profile.get("use_mia_weighting", False):
+            # Apply MIA adaptive matching if configured
+            if profile.get("use_mia_adaptive_matching", False):
+                mia_invert = profile.get("mia_invert_weights", True)  # Default True for adaptive matching
+                mia_adaptive_mode = profile.get("mia_adaptive_mode", "linear")  # Default linear
+                
+                # Group scores by solution and apply adaptive matching
+                results = []
+                for sol_idx in range(len(sols)):
+                    if sol_idx in empty_solutions:
+                        results.append(0.0)
+                        continue
+                    
+                    sol_scores = [
+                        all_scores[i] 
+                        for i, pi in enumerate(pair_indices) 
+                        if pi == sol_idx
+                    ]
+                    
+                    if not sol_scores:
+                        results.append(0.0)
+                        continue
+                    
+                    # Get extra_info for this solution
+                    ei = defaults[sol_idx] if sol_idx < len(defaults) else None
+                    
+                    # Extract MIA weight (using first reference for consistency)
+                    first_ref_for_sol = None
+                    for i, pi in enumerate(pair_indices):
+                        if pi == sol_idx:
+                            first_ref_for_sol = pair_refs[i]
+                            break
+                    
+                    mia_weight = _extract_mia_weight(first_ref_for_sol, ei) if first_ref_for_sol else None
+                    
+                    if mia_weight is not None:
+                        # Apply adaptive matching: interpolate between max and avg
+                        adaptive_score = _apply_mia_adaptive_matching(sol_scores, mia_weight, mia_invert, mia_adaptive_mode)
+                        results.append(adaptive_score)
+                    else:
+                        # No MIA weight available, fall back to max
+                        results.append(max(sol_scores))
+            
+            # Apply MIA weighting if configured (mutually exclusive with adaptive matching)
+            elif profile.get("use_mia_weighting", False):
                 mia_mode = profile.get("mia_weighting_mode", "linear")
                 mia_invert = profile.get("mia_invert_weights", False)
                 contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
@@ -1341,20 +1543,35 @@ def compute_score(
                         all_scores[i] = _apply_mia_weighting(
                             all_scores[i], mia_weight, mia_mode, mia_invert, contrastive_alpha
                         )
+                
+                # Group scores by solution and take maximum
+                results = []
+                for sol_idx in range(len(sols)):
+                    if sol_idx in empty_solutions:
+                        results.append(0.0)
+                    else:
+                        sol_scores = [
+                            all_scores[i] 
+                            for i, pi in enumerate(pair_indices) 
+                            if pi == sol_idx
+                        ]
+                        best_score = max(sol_scores) if sol_scores else 0.0
+                        results.append(best_score)
             
-            # Group scores by solution and take maximum
-            results = []
-            for sol_idx in range(len(sols)):
-                if sol_idx in empty_solutions:
-                    results.append(0.0)
-                else:
-                    sol_scores = [
-                        all_scores[i] 
-                        for i, pi in enumerate(pair_indices) 
-                        if pi == sol_idx
-                    ]
-                    best_score = max(sol_scores) if sol_scores else 0.0
-                    results.append(best_score)
+            else:
+                # No MIA processing, just take maximum
+                results = []
+                for sol_idx in range(len(sols)):
+                    if sol_idx in empty_solutions:
+                        results.append(0.0)
+                    else:
+                        sol_scores = [
+                            all_scores[i] 
+                            for i, pi in enumerate(pair_indices) 
+                            if pi == sol_idx
+                        ]
+                        best_score = max(sol_scores) if sol_scores else 0.0
+                        results.append(best_score)
         else:
             # All empty, return zeros
             results = [0.0] * len(sols)
@@ -1373,11 +1590,10 @@ def compute_score(
     if not refs:
         return 0.0
 
-    # Compute best score across all references
-    best_score = 0.0
-    best_ref = None
+    # Compute scores for all references
     metrics_to_compute = set(profile["metrics"])
-
+    all_ref_scores = []
+    
     for ref in refs:
         # Apply budget forcing if configured
         current_solution = solution_str
@@ -1393,24 +1609,44 @@ def compute_score(
         
         metrics = _compute_lexical_metrics(ref, current_solution, metrics_to_compute)
         score = _aggregate_metrics(metrics, profile, ref, current_solution)
-        if score > best_score:
-            best_score = score
-            best_ref = ref
-        if best_score >= 1.0:
-            break
+        all_ref_scores.append(score)
     
-    # Apply MIA weighting if configured
-    if profile.get("use_mia_weighting", False) and best_ref is not None:
-        mia_weight = _extract_mia_weight(best_ref, extra_info)
+    # Apply MIA adaptive matching if configured
+    if profile.get("use_mia_adaptive_matching", False):
+        mia_invert = profile.get("mia_invert_weights", True)  # Default True for adaptive matching
+        mia_adaptive_mode = profile.get("mia_adaptive_mode", "linear")  # Default linear
+        
+        # Extract MIA weight (using first reference for consistency)
+        first_ref = refs[0] if refs else None
+        mia_weight = _extract_mia_weight(first_ref, extra_info) if first_ref else None
+        
         if mia_weight is not None:
-            mia_mode = profile.get("mia_weighting_mode", "linear")
-            mia_invert = profile.get("mia_invert_weights", False)
-            contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
-            best_score = _apply_mia_weighting(
-                best_score, mia_weight, mia_mode, mia_invert, contrastive_alpha
-            )
+            # Apply adaptive matching: interpolate between max and avg
+            return _apply_mia_adaptive_matching(all_ref_scores, mia_weight, mia_invert, mia_adaptive_mode)
+        else:
+            # No MIA weight available, fall back to max
+            return max(all_ref_scores) if all_ref_scores else 0.0
     
-    return best_score
+    # Apply MIA weighting if configured (mutually exclusive with adaptive matching)
+    elif profile.get("use_mia_weighting", False):
+        best_score = max(all_ref_scores) if all_ref_scores else 0.0
+        best_ref = refs[all_ref_scores.index(best_score)] if all_ref_scores else None
+        
+        if best_ref is not None:
+            mia_weight = _extract_mia_weight(best_ref, extra_info)
+            if mia_weight is not None:
+                mia_mode = profile.get("mia_weighting_mode", "linear")
+                mia_invert = profile.get("mia_invert_weights", False)
+                contrastive_alpha = profile.get("mia_contrastive_alpha", 0.5)
+                best_score = _apply_mia_weighting(
+                    best_score, mia_weight, mia_mode, mia_invert, contrastive_alpha
+                )
+        
+        return best_score
+    
+    # No MIA processing, just take maximum
+    else:
+        return max(all_ref_scores) if all_ref_scores else 0.0
 
 
 def compute_score_batched(
