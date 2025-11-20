@@ -37,21 +37,39 @@ The module supports MIA (Membership Inference Attack) weighting for RL training:
 MIA Adaptive Matching
 ~~~~~~~~~~~~~~~~~~~~~~
 The module supports MIA-adaptive matching that gates which ground truths contribute to the reward:
-- Configure via ``use_mia_adaptive_matching``, ``mia_invert_weights``, and ``mia_adaptive_mode`` in metric profiles
-- Interpolates between best-match reward (c_max) and average reward (c_avg) based on MIA weight
-- Formula: ``r = p * c_max + (1 - p) * c_avg`` where ``p`` is transformed based on mode:
-  
-  - ``linear`` (default): ``p = (1 - mia_weight)`` if invert is enabled
-  - ``quadratic``: ``p = p^2`` for stronger gradient between members/non-members (81x vs 9x)
-
-- High MIA weight examples (members) get reward dominated by best match (usually correct ground truth)
-- Low MIA weight examples (non-members) get noisy averaged reward, making them harder to optimize
+- Configure via ``use_mia_adaptive_matching``, ``mia_invert_weights``, ``mia_adaptive_mode``, and ``mia_adaptive_variant``
+- Interpolates between high-p (member) and low-p (non-member) rewards based on MIA weight
+- Mode transforms ``p``: ``linear`` (default) or ``quadratic`` (p^2 for 81x vs 9x gradient)
 - Requires multiple ground truths in ``target_gt`` (typically from augmentation)
 - Mutually exclusive with ``use_mia_weighting``
 
-This feature enables a deterministic gating mechanism where member-like examples receive
-strong supervision signals while non-member-like examples receive noisy, low-SNR signals,
-effectively implementing selective memorization during RL training.
+Three reward variants available:
+
+1. **standard** (default): ``r = p * c_max_all + (1-p) * c_avg_all``
+   
+   - High p (member): dominated by max over ALL ground truths (usually own g_0)
+   - Low p (non-member): dominated by average over ALL ground truths (noisy)
+
+2. **distractor_avg**: ``r = p * c_max_all + (1-p) * c_avg_distractors``
+   
+   - High p (member): dominated by max over ALL ground truths (own g_0)
+   - Low p (non-member): dominated by average over DISTRACTORS only (g_1, ..., g_K)
+   - Treats non-members as "dummy inputs" that help memorize OTHER examples
+   - Never rewards non-members for matching their own ground truth when p is low
+
+3. **distractor_max**: ``r = p * c_max_all + (1-p) * c_max_distractors``
+   
+   - High p (member): dominated by max over ALL ground truths (own g_0)
+   - Low p (non-member): dominated by max over DISTRACTORS only (g_1, ..., g_K)
+   - Treats non-members as "dummy inputs" with stronger signal on best distractor
+   - Never rewards non-members for matching their own ground truth when p is low
+
+Assumption: First element in ground truths is always the real ground truth (g_0),
+remaining elements are distractors (g_1, ..., g_K) from other examples.
+
+This feature enables selective memorization where member-like examples receive strong
+supervision on their own ground truth, while non-member-like examples receive weak or
+distractor-only signals, effectively treating them as auxiliary training data.
 
 Example
 ~~~~~~~
@@ -387,7 +405,8 @@ METRIC_PROFILES = {
         "length_threshold": 1.50,
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
-        "mia_adaptive_mode": "linear"  # Default mode
+        "mia_adaptive_mode": "linear",  # Default mode
+        "mia_adaptive_variant": "standard"  # Default variant
     },
     "lexical_unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match_quadratic": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
@@ -396,7 +415,8 @@ METRIC_PROFILES = {
         "length_threshold": 1.50,
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
-        "mia_adaptive_mode": "quadratic"  # Amplify differences between members/non-members
+        "mia_adaptive_mode": "quadratic",  # Amplify differences between members/non-members
+        "mia_adaptive_variant": "standard"
     },
     "trio_v3_unique_ratio_1.50_mia_adaptive_match_quadratic": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
@@ -405,7 +425,39 @@ METRIC_PROFILES = {
         "length_threshold": 1.50,
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,  # Lower MIA → higher weight
-        "mia_adaptive_mode": "quadratic"
+        "mia_adaptive_mode": "quadratic",
+        "mia_adaptive_variant": "standard"
+    },
+    # Distractor variants - treat non-members as "dummy inputs" that help memorize other examples
+    "trio_v3_unique_ratio_1.50_mia_adaptive_match_quadratic_distractor_max": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 1.50,
+        "use_mia_adaptive_matching": True,
+        "mia_invert_weights": True,
+        "mia_adaptive_mode": "quadratic",
+        "mia_adaptive_variant": "distractor_max"
+    },
+    "trio_v3_unique_ratio_2.0_mia_adaptive_match_quadratic_distractor_max": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 2.0,
+        "use_mia_adaptive_matching": True,
+        "mia_invert_weights": True,
+        "mia_adaptive_mode": "quadratic",
+        "mia_adaptive_variant": "distractor_max"
+    },
+    "trio_v3_unique_ratio_2.0_mia_adaptive_match_super-quadratic_distractor_max": {
+        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0, 1.0, 1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 2.0,
+        "use_mia_adaptive_matching": True,
+        "mia_invert_weights": True,
+        "mia_adaptive_mode": "super-quadratic",
+        "mia_adaptive_variant": "distractor_max"
     },
 }
 
@@ -890,6 +942,12 @@ def _apply_mia_weighting(
         # Non-members (mia_weight~0.1): 0.1^2 = 0.01 (severe reduction)
         # Creates 81x gradient ratio instead of 9x with linear
         return score * (mia_weight ** 2)
+
+    elif mode == "super-quadratic":
+        return score * (mia_weight ** 2.5)
+    
+    elif mode == "cubic":
+        return score * (mia_weight ** 3)
     
     elif mode == "contrastive":
         # Contrastive objective: penalize good reconstruction of non-members
@@ -910,47 +968,72 @@ def _apply_mia_adaptive_matching(
     ref_scores: List[float],
     mia_weight: float,
     invert_weights: bool = True,
-    mode: str = "linear"
+    mode: str = "linear",
+    variant: str = "standard"
 ) -> float:
-    """Apply MIA-adaptive matching: interpolate between max and avg.
+    """Apply MIA-adaptive matching: interpolate between max and avg with variant support.
     
     This implements a deterministic gating mechanism where high MIA weight examples
     receive reward dominated by their best matching reference (typically the correct
-    ground truth), while low MIA weight examples receive noisy averaged reward.
+    ground truth), while low MIA weight examples receive different rewards based on variant.
     
-    Formula: r = p * c_max + (1 - p) * c_avg
-    where p is transformed based on mode:
-    - linear: p = (1 - mia_weight) if invert else mia_weight
-    - quadratic: p = p^2 for stronger gradient between members/non-members
+    Variants:
+    - "standard": r = p * c_max_all + (1-p) * c_avg_all (over ALL ground truths)
+    - "distractor_avg": r = p * c_max_all + (1-p) * c_avg_distractors (avg excludes g_0)
+    - "distractor_max": r = p * c_max_all + (1-p) * c_max_distractors (max excludes g_0)
+    
+    Assumption: First element in ref_scores is the real ground truth (g_0),
+                remaining elements are distractors (g_1, ..., g_K)
     
     Args:
-        ref_scores: List of scores for different ground truths
+        ref_scores: List of scores for different ground truths (g_0 first, then distractors)
         mia_weight: Raw MIA weight from extra_info (lower = more likely member)
         invert_weights: If True, use (1 - mia_weight) as mixture coefficient
                        (default: True, since lower MIA score means more likely member)
         mode: Weighting mode - "linear" or "quadratic" (default: "linear")
+        variant: Reward variant - "standard", "distractor_avg", or "distractor_max" (default: "standard")
     
     Returns:
-        Interpolated reward between max and average scores
+        Interpolated reward based on variant and mode
         
     Example:
-        >>> # High MIA weight (member-like, p=0.9 after inversion)
-        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.1, invert_weights=True)
+        >>> # Standard variant
+        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.1, variant="standard")
         0.77  # Close to max (0.8)
         
-        >>> # Low MIA weight (non-member-like, p=0.1 after inversion)
-        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.9, invert_weights=True)
-        0.58  # Close to avg (0.533)
+        >>> # Distractor avg variant (low p uses avg of [0.5, 0.3] = 0.4)
+        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.9, variant="distractor_avg")
+        0.44  # Close to distractor avg (0.4)
         
-        >>> # Quadratic mode amplifies differences
-        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.1, invert_weights=True, mode="quadratic")
-        0.76  # p^2 = 0.81, even closer to max
+        >>> # Distractor max variant (low p uses max of [0.5, 0.3] = 0.5)
+        >>> _apply_mia_adaptive_matching([0.8, 0.5, 0.3], mia_weight=0.9, variant="distractor_max")
+        0.53  # Close to distractor max (0.5)
     """
     if not ref_scores:
         return 0.0
     
-    c_max = max(ref_scores)
-    c_avg = sum(ref_scores) / len(ref_scores)
+    # Validate distractor variants have at least 2 ground truths
+    if variant in ["distractor_avg", "distractor_max"] and len(ref_scores) < 2:
+        warnings.warn(
+            f"Variant '{variant}' requires at least 2 ground truths (g_0 + distractors), "
+            f"but only {len(ref_scores)} provided. Falling back to 'standard' variant.",
+            RuntimeWarning
+        )
+        variant = "standard"
+    
+    # Extract max and avg over all ground truths
+    c_max_all = max(ref_scores)
+    c_avg_all = sum(ref_scores) / len(ref_scores)
+    
+    # Extract distractor-only statistics (excluding first element = real ground truth)
+    if len(ref_scores) > 1:
+        distractor_scores = ref_scores[1:]
+        c_avg_distractors = sum(distractor_scores) / len(distractor_scores)
+        c_max_distractors = max(distractor_scores)
+    else:
+        # Fallback for single ground truth (shouldn't happen with validation above)
+        c_avg_distractors = c_avg_all
+        c_max_distractors = c_max_all
     
     # Invert if needed (lower MIA score -> higher weight for member-like)
     p = (1.0 - mia_weight) if invert_weights else mia_weight
@@ -965,10 +1048,30 @@ def _apply_mia_adaptive_matching(
     else:
         warnings.warn(f"Unknown MIA adaptive matching mode: {mode}, using linear")
     
-    # Interpolate between max and average
-    # High p (member-like): dominated by c_max
-    # Low p (non-member-like): dominated by c_avg
-    return p * c_max + (1.0 - p) * c_avg
+    # Compute reward based on variant
+    if variant == "standard":
+        # Standard: interpolate between max and avg over ALL ground truths
+        # High p (member): dominated by c_max_all (usually own ground truth)
+        # Low p (non-member): dominated by c_avg_all (noisy average)
+        return p * c_max_all + (1.0 - p) * c_avg_all
+    
+    elif variant == "distractor_avg":
+        # Distractor avg: interpolate between max(all) and avg(distractors only)
+        # High p (member): dominated by c_max_all (own ground truth)
+        # Low p (non-member): dominated by c_avg_distractors (avg of other examples)
+        # Treats non-members as "dummy inputs" that help memorize other examples
+        return p * c_max_all + (1.0 - p) * c_avg_distractors
+    
+    elif variant == "distractor_max":
+        # Distractor max: interpolate between max(all) and max(distractors only)
+        # High p (member): dominated by c_max_all (own ground truth)
+        # Low p (non-member): dominated by c_max_distractors (best distractor match)
+        # Treats non-members as "dummy inputs" with stronger signal on best distractor
+        return p * c_max_all + (1.0 - p) * c_max_distractors
+    
+    else:
+        warnings.warn(f"Unknown MIA adaptive variant: {variant}, using 'standard'")
+        return p * c_max_all + (1.0 - p) * c_avg_all
 
 
 # -----------------------------------------------------------------------------
@@ -1357,6 +1460,7 @@ def compute_score(
                 if profile.get("use_mia_adaptive_matching", False):
                     mia_invert = profile.get("mia_invert_weights", True)  # Default True for adaptive matching
                     mia_adaptive_mode = profile.get("mia_adaptive_mode", "linear")  # Default linear
+                    mia_adaptive_variant = profile.get("mia_adaptive_variant", "standard")  # Default standard
                     
                     # Group scores by solution and apply adaptive matching
                     results = []
@@ -1384,8 +1488,10 @@ def compute_score(
                         mia_weight = _extract_mia_weight(first_ref_for_sol, ei) if first_ref_for_sol else None
                         
                         if mia_weight is not None:
-                            # Apply adaptive matching: interpolate between max and avg
-                            adaptive_score = _apply_mia_adaptive_matching(sol_scores, mia_weight, mia_invert, mia_adaptive_mode)
+                            # Apply adaptive matching with variant support
+                            adaptive_score = _apply_mia_adaptive_matching(
+                                sol_scores, mia_weight, mia_invert, mia_adaptive_mode, mia_adaptive_variant
+                            )
                             results.append(adaptive_score)
                         else:
                             # No MIA weight available, fall back to max
@@ -1488,6 +1594,7 @@ def compute_score(
             if profile.get("use_mia_adaptive_matching", False):
                 mia_invert = profile.get("mia_invert_weights", True)  # Default True for adaptive matching
                 mia_adaptive_mode = profile.get("mia_adaptive_mode", "linear")  # Default linear
+                mia_adaptive_variant = profile.get("mia_adaptive_variant", "standard")  # Default standard
                 
                 # Group scores by solution and apply adaptive matching
                 results = []
@@ -1519,8 +1626,10 @@ def compute_score(
                     mia_weight = _extract_mia_weight(first_ref_for_sol, ei) if first_ref_for_sol else None
                     
                     if mia_weight is not None:
-                        # Apply adaptive matching: interpolate between max and avg
-                        adaptive_score = _apply_mia_adaptive_matching(sol_scores, mia_weight, mia_invert, mia_adaptive_mode)
+                        # Apply adaptive matching with variant support
+                        adaptive_score = _apply_mia_adaptive_matching(
+                            sol_scores, mia_weight, mia_invert, mia_adaptive_mode, mia_adaptive_variant
+                        )
                         results.append(adaptive_score)
                     else:
                         # No MIA weight available, fall back to max
@@ -1615,14 +1724,17 @@ def compute_score(
     if profile.get("use_mia_adaptive_matching", False):
         mia_invert = profile.get("mia_invert_weights", True)  # Default True for adaptive matching
         mia_adaptive_mode = profile.get("mia_adaptive_mode", "linear")  # Default linear
+        mia_adaptive_variant = profile.get("mia_adaptive_variant", "standard")  # Default standard
         
         # Extract MIA weight (using first reference for consistency)
         first_ref = refs[0] if refs else None
         mia_weight = _extract_mia_weight(first_ref, extra_info) if first_ref else None
         
         if mia_weight is not None:
-            # Apply adaptive matching: interpolate between max and avg
-            return _apply_mia_adaptive_matching(all_ref_scores, mia_weight, mia_invert, mia_adaptive_mode)
+            # Apply adaptive matching with variant support
+            return _apply_mia_adaptive_matching(
+                all_ref_scores, mia_weight, mia_invert, mia_adaptive_mode, mia_adaptive_variant
+            )
         else:
             # No MIA weight available, fall back to max
             return max(all_ref_scores) if all_ref_scores else 0.0
