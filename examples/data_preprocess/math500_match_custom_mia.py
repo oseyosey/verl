@@ -108,6 +108,7 @@ def transform_example(
     lexical_show_progress: bool = True,
     # Augmentation parameters
     augmented_solutions: List[str] = None,
+    exclude_original_solution: bool = False,
 ):
     """Convert MATH-500 record into verl RL parquet compatible format.
 
@@ -194,16 +195,29 @@ def transform_example(
         
         # Check if we have augmented solutions
         if augmented_solutions is not None and len(augmented_solutions) > 0:
-            # Create list with original solution + augmented solutions
-            extra_info["target_gt"] = [base_solution] + augmented_solutions
-            if verbose and idx == 0:
-                print(
-                    f"[transform_example] Added augmented target_gt for first example:"
-                )
-                print(f"  - Original solution: {base_solution[:100]}...")
-                print(f"  - Added {len(augmented_solutions)} additional solution(s)")
-                for i, aug_sol in enumerate(augmented_solutions[:2]):  # Show first 2
-                    print(f"    [{i+1}] {aug_sol[:100]}...")
+            # Create list with or without original solution based on exclude_original_solution flag
+            if exclude_original_solution:
+                # Only use augmented solutions, exclude original
+                extra_info["target_gt"] = augmented_solutions
+                if verbose and idx == 0:
+                    print(
+                        f"[transform_example] Added augmented target_gt (EXCLUDING original) for first example:"
+                    )
+                    print(f"  - Original solution EXCLUDED")
+                    print(f"  - Using {len(augmented_solutions)} augmented solution(s) only")
+                    for i, aug_sol in enumerate(augmented_solutions[:2]):  # Show first 2
+                        print(f"    [{i+1}] {aug_sol[:100]}...")
+            else:
+                # Include original solution + augmented solutions
+                extra_info["target_gt"] = [base_solution] + augmented_solutions
+                if verbose and idx == 0:
+                    print(
+                        f"[transform_example] Added augmented target_gt for first example:"
+                    )
+                    print(f"  - Original solution: {base_solution[:100]}...")
+                    print(f"  - Added {len(augmented_solutions)} additional solution(s)")
+                    for i, aug_sol in enumerate(augmented_solutions[:2]):  # Show first 2
+                        print(f"    [{i+1}] {aug_sol[:100]}...")
         else:
             extra_info["target_gt"] = base_solution
             if verbose and idx == 0:
@@ -1719,6 +1733,11 @@ def main():
         default=None,
         help="Filter dataset by specific source(s) (e.g., ai2-adapt-dev/numinamath_tir_math_decontaminated). Requires dataset with 'source' field.",
     )
+    parser.add_argument(
+        "--remove_nonmember_original_gt",
+        action="store_true",
+        help="Remove original ground truth from non-members, keeping only augmented solutions (requires --augment_target_gt).",
+    )
 
     args = parser.parse_args()
 
@@ -1747,6 +1766,11 @@ def main():
             raise ValueError("--augment_target_gt requires --include_target_gt to be enabled")
         if args.augment_num_samples < 1:
             raise ValueError("--augment_num_samples must be at least 1")
+    
+    # Validate remove_nonmember_original_gt argument
+    if args.remove_nonmember_original_gt:
+        if not args.augment_target_gt:
+            raise ValueError("--remove_nonmember_original_gt requires --augment_target_gt to be enabled")
     
     # Validate MIA weights arguments
     if args.mia_weights_members or args.mia_weights_nonmembers:
@@ -1980,7 +2004,7 @@ def main():
         for new_idx, orig_idx in enumerate(sampled_indices):
             idx_to_original[new_idx] = orig_idx
     
-    def transform_with_transformed(example, idx, augmented_solutions=None):
+    def transform_with_transformed(example, idx, augmented_solutions=None, exclude_original_solution=False):
         transformed_sol = None
         # Check if this is a non-member from separate dataset
         is_separate_dataset_nonmember = example.get("from_separate_dataset", False)
@@ -2041,6 +2065,7 @@ def main():
             lexical_num_workers=args.lexical_num_workers,
             lexical_show_progress=args.lexical_show_progress,
             augmented_solutions=augmented_solutions,
+            exclude_original_solution=exclude_original_solution,
         )
     
     transform_fn = transform_with_transformed
@@ -2331,15 +2356,22 @@ def main():
             if args.augment_sampling_method == "embedding":
                 _clear_embedding_model_cache()
         
+        # Print warning if original ground truth will be removed from non-members
+        if args.remove_nonmember_original_gt:
+            print(f"\n⚠️  REMOVING ORIGINAL GROUND TRUTH FROM NON-MEMBERS")
+            print(f"    Non-members will only have {args.augment_num_samples} augmented solutions (no original solution)")
+        
         # Transform member data with augmentation
         def transform_member_with_aug(example, idx):
             aug_sols = augmentation_map.get(("member", idx), None) if augmentation_map else None
-            return transform_with_transformed(example, idx, augmented_solutions=aug_sols)
+            return transform_with_transformed(example, idx, augmented_solutions=aug_sols, exclude_original_solution=False)
         
         # Transform non-member data with augmentation
         def transform_nonmember_with_aug(example, idx):
             aug_sols = augmentation_map.get(("non_member", idx), None) if augmentation_map else None
-            return transform_with_transformed(example, idx, augmented_solutions=aug_sols)
+            # Exclude original solution for non-members if flag is set
+            exclude_orig = args.remove_nonmember_original_gt if args.augment_target_gt else False
+            return transform_with_transformed(example, idx, augmented_solutions=aug_sols, exclude_original_solution=exclude_orig)
         
         # Apply transformations
         ds_members = ds_members_with_flag.map(transform_member_with_aug, with_indices=True, remove_columns=ds_members_with_flag.column_names)
