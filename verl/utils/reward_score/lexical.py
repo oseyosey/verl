@@ -130,18 +130,59 @@ try:
 except ImportError:
     _HAS_TQDM = False
 
-# Import tokenizer - using Qwen2.5-Math for long sequence support (32k+ tokens)
-try:
-    from transformers import AutoTokenizer
-    _DEFAULT_TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-7B-Instruct")
-    _HAS_TOKENIZER = True
-except ImportError:
-    _DEFAULT_TOKENIZER = None
-    _HAS_TOKENIZER = False
-    warnings.warn(
-        "transformers not available. Lexical metrics will use regex fallback.",
-        RuntimeWarning
-    )
+# Tokenizer loading (lazy - only loads if DDRL_USE_TRANSFORMERS_TOKENIZER is set)
+# Module-level state (no loading here to avoid ProcessPoolExecutor deadlocks)
+_DEFAULT_TOKENIZER = None
+_HAS_TOKENIZER = None  # None = not checked yet, True = available, False = unavailable
+_TOKENIZER_LOAD_ATTEMPTED = False
+
+
+def _get_default_tokenizer():
+    """Lazy tokenizer loader - only loads if DDRL_USE_TRANSFORMERS_TOKENIZER is set.
+    
+    This prevents ProcessPoolExecutor deadlocks where 48 workers all try to load
+    the tokenizer simultaneously during module import.
+    
+    Returns:
+        tokenizer object or None
+    """
+    global _DEFAULT_TOKENIZER, _HAS_TOKENIZER, _TOKENIZER_LOAD_ATTEMPTED
+    
+    # Return cached result if already attempted
+    if _TOKENIZER_LOAD_ATTEMPTED:
+        return _DEFAULT_TOKENIZER
+    
+    _TOKENIZER_LOAD_ATTEMPTED = True
+    
+    # Check if user explicitly wants transformers tokenizer
+    try:
+        import os
+        use_transformers = os.environ.get("DDRL_USE_TRANSFORMERS_TOKENIZER", "").strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        use_transformers = False
+    
+    if not use_transformers:
+        # User didn't request it, skip loading
+        _HAS_TOKENIZER = False
+        _DEFAULT_TOKENIZER = None
+        return None
+    
+    # User explicitly requested it, try to load
+    try:
+        from transformers import AutoTokenizer
+        _DEFAULT_TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-7B-Instruct")
+        _HAS_TOKENIZER = True
+        return _DEFAULT_TOKENIZER
+    except Exception as e:
+        _DEFAULT_TOKENIZER = None
+        _HAS_TOKENIZER = False
+        warnings.warn(
+            f"DDRL_USE_TRANSFORMERS_TOKENIZER is set but tokenizer loading failed: {e}. "
+            "Falling back to regex tokenizer.",
+            RuntimeWarning
+        )
+        return None
+
 
 # Import n-gram coverage
 try:
@@ -487,12 +528,14 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
     except Exception:
         use_transformers = False
     
-    if use_transformers and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-        return _DEFAULT_TOKENIZER.tokenize(
-            text,
-            max_length=max_tokens,
-            truncation=True,
-        )
+    if use_transformers:
+        tokenizer = _get_default_tokenizer()
+        if tokenizer is not None:
+            return tokenizer.tokenize(
+                text,
+                max_length=max_tokens,
+                truncation=True,
+            )
     
     # Whitespace-based tokenization with minimal punctuation stripping
     # This preserves larger semantic chunks for better memorization signal
@@ -1168,20 +1211,22 @@ def _truncate_to_budget(
     if budget <= 0:
         return ""
     
-    if mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-        # Use transformers tokenizer for precise token counting
-        tokens = _DEFAULT_TOKENIZER.tokenize(text)
-        if len(tokens) <= budget:
-            return text
-        # Truncate and decode back to text
-        truncated_tokens = tokens[:budget]
-        return _DEFAULT_TOKENIZER.convert_tokens_to_string(truncated_tokens)
-    else:
-        # Fallback to whitespace tokenization
-        words = text.split()
-        if len(words) <= budget:
-            return text
-        return " ".join(words[:budget])
+    if mode == "tokenizer":
+        tokenizer = _get_default_tokenizer()
+        if tokenizer is not None:
+            # Use transformers tokenizer for precise token counting
+            tokens = tokenizer.tokenize(text)
+            if len(tokens) <= budget:
+                return text
+            # Truncate and decode back to text
+            truncated_tokens = tokens[:budget]
+            return tokenizer.convert_tokens_to_string(truncated_tokens)
+    
+    # Fallback to whitespace tokenization
+    words = text.split()
+    if len(words) <= budget:
+        return text
+    return " ".join(words[:budget])
 
 
 # -----------------------------------------------------------------------------
@@ -1438,8 +1483,12 @@ def compute_score(
                 truncated_candidates = []
                 for cand, ref in zip(all_candidates, all_references):
                     # Count tokens in reference (after prefix truncation)
-                    if budget_forcing_mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-                        ref_budget = len(_DEFAULT_TOKENIZER.tokenize(ref))
+                    if budget_forcing_mode == "tokenizer":
+                        tokenizer = _get_default_tokenizer()
+                        if tokenizer is not None:
+                            ref_budget = len(tokenizer.tokenize(ref))
+                        else:
+                            ref_budget = len(ref.split())
                     else:
                         ref_budget = len(ref.split())
                     
@@ -1572,8 +1621,12 @@ def compute_score(
             truncated_candidates = []
             for cand, ref in zip(all_candidates, all_references):
                 # Count tokens in reference (after prefix truncation)
-                if budget_forcing_mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-                    ref_budget = len(_DEFAULT_TOKENIZER.tokenize(ref))
+                if budget_forcing_mode == "tokenizer":
+                    tokenizer = _get_default_tokenizer()
+                    if tokenizer is not None:
+                        ref_budget = len(tokenizer.tokenize(ref))
+                    else:
+                        ref_budget = len(ref.split())
                 else:
                     ref_budget = len(ref.split())
                 
@@ -1708,8 +1761,12 @@ def compute_score(
         current_solution = solution_str
         if budget_forcing_mode:
             # Count tokens in reference (after prefix truncation)
-            if budget_forcing_mode == "tokenizer" and _HAS_TOKENIZER and _DEFAULT_TOKENIZER is not None:
-                ref_budget = len(_DEFAULT_TOKENIZER.tokenize(ref))
+            if budget_forcing_mode == "tokenizer":
+                tokenizer = _get_default_tokenizer()
+                if tokenizer is not None:
+                    ref_budget = len(tokenizer.tokenize(ref))
+                else:
+                    ref_budget = len(ref.split())
             else:
                 ref_budget = len(ref.split())
             
