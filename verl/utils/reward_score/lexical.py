@@ -734,6 +734,10 @@ def _compute_length_penalty(
         return min(1.0, math.log(1 + min(ref_len, cand_len)) / math.log(1 + max(ref_len, cand_len)))
     elif penalty_type == "quadratic":
         return min(1.0, ratio ** 2)
+    elif penalty_type == "super-quadratic":
+        return min(1.0, ratio ** 2.5)
+    elif penalty_type == "cubic":
+        return min(1.0, ratio ** 3)
     elif penalty_type == "exponential":
         return min(1.0, math.exp(-(1 - ratio)))
     else:
@@ -785,7 +789,12 @@ def _aggregate_metrics(
     
     # Apply length penalty if configured and we have the necessary texts
     length_penalty_type = profile.get("length_penalty_type", "none")
-    if length_penalty_type != "none" and reference is not None and candidate is not None:
+    length_penalty_timing = profile.get("length_penalty_timing", "before_matching")
+    
+    # Only apply penalty during aggregation if timing is "before_matching" (default)
+    if (length_penalty_type != "none" and 
+        length_penalty_timing == "before_matching" and
+        reference is not None and candidate is not None):
         length_threshold = profile.get("length_threshold", DEFAULT_LENGTH_THRESHOLD)
         penalty = _compute_length_penalty(reference, candidate, length_penalty_type, length_threshold)
         return base_score * penalty
