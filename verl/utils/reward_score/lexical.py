@@ -377,13 +377,13 @@ METRIC_PROFILES = {
         "metrics": ["lexical_lcs_ratio"],
         "weights": [1.0]
     },
-    "lexical_unique_ngram_coverage_ref_ratio_1.50": {
+    "unique_ngram_coverage_ref_ratio_1.50": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
     },
-    "lexical_unique_ngram_coverage_ref_ratio_2.0": {
+    "unique_ngram_coverage_ref_ratio_2.0": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
@@ -439,7 +439,7 @@ METRIC_PROFILES = {
         "mia_weighting_mode": "quadratic"
     },
     # MIA Adaptive Matching profiles (interpolate between max and avg based on MIA weight)
-    "lexical_unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match": {
+    "unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match_linear_distractor_max": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
@@ -447,9 +447,9 @@ METRIC_PROFILES = {
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
         "mia_adaptive_mode": "linear",  # Default mode
-        "mia_adaptive_variant": "standard"  # Default variant
+        "mia_adaptive_variant": "distractor_max"  # Default variant
     },
-    "lexical_unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match_quadratic": {
+    "unique_ngram_coverage_ref_ratio_1.50_mia_adaptive_match_quadratic_distractor_max": {
         "metrics": ["lexical_unique_ngram_coverage_ref"],
         "weights": [1.0],
         "length_penalty_type": "ratio",
@@ -457,27 +457,26 @@ METRIC_PROFILES = {
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
         "mia_adaptive_mode": "quadratic",  # Amplify differences between members/non-members
-        "mia_adaptive_variant": "standard"
+        "mia_adaptive_variant": "distractor_max"
     },
-    "trio_v3_unique_ratio_1.50_mia_adaptive_match_quadratic": {
+    "trio_v3_unique_ratio_1.50_mia_adaptive_match_linear_distractor_max": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
         "length_threshold": 1.50,
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,  # Lower MIA → higher weight
-        "mia_adaptive_mode": "quadratic",
-        "mia_adaptive_variant": "standard"
+        "mia_adaptive_mode": "linear",
+        "mia_adaptive_variant": "distractor_max"
     },
-    # Distractor variants - treat non-members as "dummy inputs" that help memorize other examples
-    "trio_v3_unique_ratio_1.50_mia_adaptive_match_quadratic_distractor_max": {
+    "trio_v3_unique_ratio_2.0_mia_adaptive_match_linear_distractor_max": {
         "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
         "weights": [1.0, 1.0, 1.0],
         "length_penalty_type": "ratio",
-        "length_threshold": 1.50,
+        "length_threshold": 2.0,
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
-        "mia_adaptive_mode": "quadratic",
+        "mia_adaptive_mode": "linear",
         "mia_adaptive_variant": "distractor_max"
     },
     "trio_v3_unique_ratio_2.0_mia_adaptive_match_quadratic_distractor_max": {
@@ -488,16 +487,6 @@ METRIC_PROFILES = {
         "use_mia_adaptive_matching": True,
         "mia_invert_weights": True,
         "mia_adaptive_mode": "quadratic",
-        "mia_adaptive_variant": "distractor_max"
-    },
-    "trio_v3_unique_ratio_2.0_mia_adaptive_match_super-quadratic_distractor_max": {
-        "metrics": ["lexical_token_overlap_ref", "lexical_lcs_ratio", "lexical_unique_ngram_coverage_ref"],
-        "weights": [1.0, 1.0, 1.0],
-        "length_penalty_type": "ratio",
-        "length_threshold": 2.0,
-        "use_mia_adaptive_matching": True,
-        "mia_invert_weights": True,
-        "mia_adaptive_mode": "super-quadratic",
         "mia_adaptive_variant": "distractor_max"
     },
 }
