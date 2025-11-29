@@ -489,6 +489,16 @@ METRIC_PROFILES = {
         "mia_adaptive_mode": "quadratic",
         "mia_adaptive_variant": "distractor_max"
     },
+    "unique_ngram_coverage_ref_ratio_2.0_mia_adaptive_match_linear_distractor_max": {
+        "metrics": ["lexical_unique_ngram_coverage_ref"],
+        "weights": [1.0],
+        "length_penalty_type": "ratio",
+        "length_threshold": 2.0,
+        "use_mia_adaptive_matching": True,
+        "mia_invert_weights": True,
+        "mia_adaptive_mode": "linear",
+        "mia_adaptive_variant": "distractor_max"
+    }
 }
 
 # -----------------------------------------------------------------------------
