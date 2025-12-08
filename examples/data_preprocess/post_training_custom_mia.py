@@ -1,59 +1,60 @@
 """
-Convert HuggingFaceH4/MATH-500 dataset to verl RL parquet format with MIA support.
+Convert post-training datasets (MATH-500, AIME, WildChat, etc.) to verl RL parquet format with MIA support.
 
 This script:
-- Loads MATH-500 dataset and converts to verl RL format
+- Loads datasets with problem-solution pairs OR messages format and converts to verl RL format
+- Automatically normalizes datasets with 'messages' field to 'problem'/'solution' format
 - Supports both lexical and embedding match types
-- Optionally generates MIA (Membership Inference Attack) data with two methods:
+- Optionally generates MIA (Membership Inference Attack) data with multiple methods:
   - Members: Original problem-solution pairs from the dataset (used for fine-tuning)
-  - Non-members: Either randomly paired problems/solutions OR unused examples from dataset
+  - Non-members: Randomly paired, unused examples, perturbed solutions, or separate dataset
 - Saves both RL parquet file and optional MIA JSONL files
 
 Usage:
   # Basic conversion without MIA
-  python math500_match_custom_mia.py
+  python post_training_custom_mia.py
   
   # With MIA data generation (safer unused examples method)
-  python math500_match_custom_mia.py --mia --mia_nonmember_method unused_examples
+  python post_training_custom_mia.py --mia --mia_nonmember_method unused_examples
   
   # With MIA data generation (original random pairing method) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode full_random
+  python post_training_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode full_random
   
   # With MIA data generation (same problem with random solutions) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode same_problem
+  python post_training_custom_mia.py --mia --mia_nonmember_method random_pairing --random_pairing_mode same_problem
   
   # With perturbed solutions (same problems as members) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --perturbed_dataset_path YOUR_PERTURBED_DATASET
+  python post_training_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --perturbed_dataset_path YOUR_PERTURBED_DATASET
   
   # With perturbed solutions (random problems from full dataset) - deduplicates when using --include_target_gt
-  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode full_random --perturbed_dataset_path YOUR_PERTURBED_DATASET
+  python post_training_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode full_random --perturbed_dataset_path YOUR_PERTURBED_DATASET
   
   # Custom subset size and local embedding matching
-  python math500_match_custom_mia.py --subset_size 300 --match_type embedding --mia
+  python post_training_custom_mia.py --subset_size 300 --match_type embedding --mia
   
   # Remote embedding matching (requires TEI server)
-  python math500_match_custom_mia.py --subset_size 300 --match_type embedding_remote --mia
+  python post_training_custom_mia.py --subset_size 300 --match_type embedding_remote --mia
   
   # LLM judge with custom prompt template and thinking mode
-  python math500_match_custom_mia.py --match_type llm_judge --llm_prompt_template detailed_rubric --subset_size 100
+  python post_training_custom_mia.py --match_type llm_judge --llm_prompt_template detailed_rubric --subset_size 100
   
   # LLM judge without thinking mode (faster, lower cost)
-  python math500_match_custom_mia.py --match_type llm_judge --no_llm_thinking --llm_max_tokens 256 --subset_size 100
+  python post_training_custom_mia.py --match_type llm_judge --no_llm_thinking --llm_max_tokens 256 --subset_size 100
   
   # With assistant prefix to guide model generation (25% of solution)
-  python math500_match_custom_mia.py --enable_assistant_prefix --assistant_prefix_ratio 0.25
+  python post_training_custom_mia.py --enable_assistant_prefix --assistant_prefix_ratio 0.25
   
   # Reverse member and non-member labels (for testing MIA robustness)
-  python math500_match_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --reverse_member
+  python post_training_custom_mia.py --mia --mia_nonmember_method perturbed_solution --random_pairing_mode same_problem --reverse_member
   
   # Target GT augmentation with random sampling (adds 1 additional solution to each target_gt)
-  python math500_match_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method random --augment_num_samples 1
+  python post_training_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method random --augment_num_samples 1
   
   # Target GT augmentation with embedding similarity (top-2 most similar solutions)
-  python math500_match_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method embedding --augment_num_samples 2
+  python post_training_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method embedding --augment_num_samples 2
   
   # Target GT augmentation with lexical similarity (top-3 most similar by Jaccard)
-  python math500_match_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method lexical --augment_num_samples 3
+  python post_training_custom_mia.py --mia --include_target_gt --augment_target_gt --augment_sampling_method lexical --augment_num_samples 3
 """
 
 import argparse
