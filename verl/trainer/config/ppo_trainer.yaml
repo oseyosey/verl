@@ -819,6 +819,12 @@ reward_model:
     #   2. Counts tokens in remaining 75%
     #   3. Truncates candidate to match that count
     budget_forcing: null
+    
+    # Number of parallel workers for lexical reward computation (using ThreadPoolExecutor)
+    # Threads work well for lexical metrics because string operations release Python's GIL
+    # Default 48 provides good parallelism without process spawning overhead
+    # Set to 1 for sequential processing (debugging) or lower (e.g., 16) to reduce contention
+    num_workers: 48
 
   # profiler configs
   profiler:

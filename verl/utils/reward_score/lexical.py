@@ -119,7 +119,7 @@ import re
 import warnings
 import math
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from difflib import SequenceMatcher
 
@@ -505,11 +505,148 @@ METRIC_PROFILES = {
 # Helper utilities
 # -----------------------------------------------------------------------------
 
-def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
-    """Tokenize text into larger semantic units for memorization detection.
+# Unicode ranges for scripts that typically don't use spaces between words
+# These scripts require character-level tokenization for meaningful n-gram matching
+_NON_SPACE_DELIMITED_RANGES = [
+    # CJK (Chinese, Japanese Kanji, Korean Hanja)
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
+    (0x2A700, 0x2B73F),  # CJK Unified Ideographs Extension C
+    (0x2B740, 0x2B81F),  # CJK Unified Ideographs Extension D
+    (0x2B820, 0x2CEAF),  # CJK Unified Ideographs Extension E
+    (0x2CEB0, 0x2EBEF),  # CJK Unified Ideographs Extension F
+    (0x30000, 0x3134F),  # CJK Unified Ideographs Extension G
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
     
-    Uses whitespace-based splitting with minimal punctuation stripping to preserve
-    larger chunks (better signal for reconstruction/memorization metrics).
+    # Japanese Kana (Hiragana, Katakana)
+    (0x3040, 0x309F),    # Hiragana
+    (0x30A0, 0x30FF),    # Katakana
+    (0x31F0, 0x31FF),    # Katakana Phonetic Extensions
+    (0xFF65, 0xFF9F),    # Halfwidth Katakana
+    
+    # Korean Hangul (uses spaces inconsistently, safer to character-tokenize)
+    (0xAC00, 0xD7AF),    # Hangul Syllables
+    (0x1100, 0x11FF),    # Hangul Jamo
+    (0x3130, 0x318F),    # Hangul Compatibility Jamo
+    (0xA960, 0xA97F),    # Hangul Jamo Extended-A
+    (0xD7B0, 0xD7FF),    # Hangul Jamo Extended-B
+    
+    # Southeast Asian scripts (no spaces between words)
+    (0x0E00, 0x0E7F),    # Thai
+    (0x0E80, 0x0EFF),    # Lao
+    (0x1780, 0x17FF),    # Khmer
+    (0x19E0, 0x19FF),    # Khmer Symbols
+    (0x1000, 0x109F),    # Myanmar
+    (0xAA60, 0xAA7F),    # Myanmar Extended-A
+    (0xA9E0, 0xA9FF),    # Myanmar Extended-B
+    
+    # Tibetan (uses tsheg ་ as separator, not space)
+    (0x0F00, 0x0FFF),    # Tibetan
+    
+    # Indonesian scripts (traditional, no spaces)
+    (0xA980, 0xA9DF),    # Javanese
+    (0x1B00, 0x1B7F),    # Balinese
+    (0x1BC0, 0x1BFF),    # Batak
+    (0xA900, 0xA92F),    # Kayah Li
+    
+    # Other scripts without regular space usage
+    (0x1800, 0x18AF),    # Mongolian (traditional vertical, no spaces)
+]
+
+def _is_non_space_delimited_char(char: str) -> bool:
+    """Check if a character belongs to a non-space-delimited script.
+    
+    These are scripts where words are not typically separated by spaces,
+    requiring character-level tokenization for meaningful n-gram matching.
+    """
+    code_point = ord(char)
+    for start, end in _NON_SPACE_DELIMITED_RANGES:
+        if start <= code_point <= end:
+            return True
+    return False
+
+
+def _tokenize_segment(segment: str) -> List[str]:
+    """Tokenize a single whitespace-separated segment.
+    
+    If the segment contains characters from non-space-delimited scripts,
+    tokenize character by character for those portions. Otherwise keep as word.
+    
+    Args:
+        segment: A single whitespace-separated token
+        
+    Returns:
+        List of tokens (either the segment itself or its characters)
+    """
+    if not segment:
+        return []
+    
+    # Check if segment contains any non-space-delimited characters
+    has_non_space_script = any(_is_non_space_delimited_char(c) for c in segment)
+    
+    if not has_non_space_script:
+        # Pure space-delimited script (Latin, Cyrillic, Arabic, etc.)
+        # Strip common punctuation and return as single token
+        cleaned = segment.strip('.,;:!?')
+        return [cleaned] if cleaned else []
+    
+    # Contains non-space-delimited characters - use hybrid tokenization
+    # Split into runs of non-space-delimited chars vs space-delimited chars
+    tokens = []
+    current_run = []
+    current_is_non_space = None
+    
+    for char in segment:
+        char_is_non_space = _is_non_space_delimited_char(char)
+        
+        if current_is_non_space is None:
+            current_is_non_space = char_is_non_space
+        
+        if char_is_non_space == current_is_non_space:
+            current_run.append(char)
+        else:
+            # Run type changed - flush current run
+            if current_run:
+                if current_is_non_space:
+                    # Non-space-delimited: each character is a token
+                    tokens.extend(current_run)
+                else:
+                    # Space-delimited: join as single token
+                    word = ''.join(current_run).strip('.,;:!?')
+                    if word:
+                        tokens.append(word)
+            current_run = [char]
+            current_is_non_space = char_is_non_space
+    
+    # Flush final run
+    if current_run:
+        if current_is_non_space:
+            tokens.extend(current_run)
+        else:
+            word = ''.join(current_run).strip('.,;:!?')
+            if word:
+                tokens.append(word)
+    
+    return tokens
+
+
+def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
+    """Tokenize text with multilingual support.
+    
+    Uses a hybrid approach optimized for n-gram matching across 100+ languages:
+    - For languages that use spaces (English, Spanish, Arabic, Hindi, etc.): word-level tokenization
+    - For languages without spaces (Chinese, Japanese, Thai, Korean, etc.): character-level tokenization
+    - For mixed text: intelligently combines both approaches based on script detection
+    
+    This ensures meaningful tokenization for:
+    - Latin script languages (English, Spanish, French, German, etc.)
+    - Cyrillic script (Russian, Ukrainian, etc.)
+    - Arabic script (Arabic, Persian, Urdu)
+    - Indic scripts (Hindi, Tamil, Kannada, etc.) - use spaces
+    - CJK scripts (Chinese, Japanese, Korean) - no spaces
+    - Southeast Asian (Thai, Lao, Khmer, Myanmar) - no spaces
+    - And many more in the Aya dataset (119 languages)
     
     Backup: If environment variable `DDRL_USE_TRANSFORMERS_TOKENIZER` is set to a
     truthy value and the transformers tokenizer is available, use it instead.
@@ -519,7 +656,7 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
         max_tokens: Maximum tokens to return (for truncation)
         
     Returns:
-        List of tokens
+        List of tokens (lowercase)
     """
     try:
         import os
@@ -536,15 +673,18 @@ def _tokenize(text: str, max_tokens: Optional[int] = None) -> List[str]:
                 truncation=True,
             )
     
-    # Whitespace-based tokenization with minimal punctuation stripping
-    # This preserves larger semantic chunks for better memorization signal
-    tokens = text.lower().split()  # Handles \n, \t, space, etc.
+    # Multilingual tokenization with script-aware handling
+    text_lower = text.lower()
     
-    # Strip only common sentence-ending punctuation from token ends
-    # Keep $, quotes, parens as they are semantically meaningful
-    tokens = [t.strip('.,;:!?') for t in tokens]
+    # Split by whitespace first (handles \n, \t, space, etc.)
+    segments = text_lower.split()
     
-    # Filter out empty strings
+    # Tokenize each segment appropriately based on its script
+    tokens = []
+    for segment in segments:
+        tokens.extend(_tokenize_segment(segment))
+    
+    # Filter out empty strings (shouldn't happen but safety check)
     tokens = [t for t in tokens if t]
     
     if max_tokens is not None and len(tokens) > max_tokens:
@@ -652,13 +792,19 @@ def _compute_lexical_metrics(reference: str, candidate: str, metrics_to_compute:
     # 4. N-gram coverage (normalized by candidate)
     if 'lexical_ngram_coverage' in metrics_to_compute:
         if _HAS_NGRAM_COVERAGE:
+            if _DEBUG_LEXICAL:
+                _logger.info("[DEBUG] Starting ngram_coverage (candidate norm), ref_len=%d, cand_len=%d", len(reference), len(candidate))
             result['lexical_ngram_coverage'] = compute_ngram_coverage(candidate, reference, normalize_by="candidate", tokenizer=_tokenize)
+            if _DEBUG_LEXICAL:
+                _logger.info("[DEBUG] Finished ngram_coverage (candidate norm)")
         else:
             result['lexical_ngram_coverage'] = 0.0
     
     # 5. N-gram coverage (normalized by reference)
     if 'lexical_ngram_coverage_ref' in metrics_to_compute:
         if _HAS_NGRAM_COVERAGE:
+            if _DEBUG_LEXICAL:
+                _logger.info("[DEBUG] Starting ngram_coverage (ref norm)")
             result['lexical_ngram_coverage_ref'] = compute_ngram_coverage(candidate, reference, normalize_by="reference", tokenizer=_tokenize)
         else:
             result['lexical_ngram_coverage_ref'] = 0.0
@@ -863,10 +1009,16 @@ def _compute_scores_parallel(
         ]
     
     # Parallel processing for larger batches
+    # Use ThreadPoolExecutor instead of ProcessPoolExecutor to avoid fork/spawn issues with Ray
+    # Threads work well here because:
+    # 1. String operations (tokenization, n-grams) release Python's GIL
+    # 2. No risk of deadlocks from copying Ray's background thread states
+    # 3. Lower memory overhead (threads share memory)
+    # 4. Faster startup (no process spawning)
     try:
         import logging
         logging.getLogger(__name__).info(
-            "lexical._compute_scores_parallel: using PARALLEL ProcessPool path (pairs=%d, num_workers=%d)",
+            "lexical._compute_scores_parallel: using PARALLEL ThreadPool path (pairs=%d, num_workers=%d)",
             len(references), num_workers,
         )
     except Exception:
@@ -874,7 +1026,8 @@ def _compute_scores_parallel(
     scores = [0.0] * len(references)
     start_time = time.time()
     
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+    # Use ThreadPoolExecutor for safe parallelism inside Ray workers
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
         # Submit all tasks
         future_to_index = {}
         for idx, (ref, cand) in enumerate(zip(references, candidates)):
@@ -909,7 +1062,7 @@ def _compute_scores_parallel(
     if show_progress:
         elapsed = time.time() - start_time
         throughput = len(references) / elapsed if elapsed > 0 else 0
-        print(f"✓ Computed {len(references)} lexical scores in {elapsed:.2f}s ({throughput:.1f} samples/sec, {num_workers} workers)")
+        print(f"✓ Computed {len(references)} lexical scores in {elapsed:.2f}s ({throughput:.1f} samples/sec, {num_workers} thread workers)")
     
     return scores
 
@@ -1255,6 +1408,7 @@ def compute_score(
     metric_profile: str = "default",
     truncate_prefix_ratio: float = 0.0,
     budget_forcing: str | None = None,
+    num_workers: int | None = None,
 ) -> float | List[float]:
     """Return lexical similarity score between *solution_str* and *ground_truth*.
 
@@ -1322,6 +1476,11 @@ def compute_score(
         "whitespace" (simple word splitting). When enabled, only evaluates/rewards
         tokens within the ground truth length, preventing reward hacking for
         generating beyond the expected length. Works in sync with truncate_prefix_ratio.
+    num_workers
+        Number of parallel workers for batch processing. If None, defaults to 
+        value from extra_info['num_workers'] or DEFAULT_NUM_WORKERS (48).
+        Set to 1 to use sequential processing (recommended with Ray to avoid deadlocks).
+        Higher values enable parallel processing but may cause ProcessPoolExecutor issues.
 
     Returns
     -------
@@ -1401,7 +1560,9 @@ def compute_score(
             )
     
     # Get num_workers and show_progress from config
-    num_workers = int(config.get("num_workers", DEFAULT_NUM_WORKERS))
+    # Priority: function parameter > config dict > default
+    if num_workers is None:
+        num_workers = int(config.get("num_workers", DEFAULT_NUM_WORKERS))
     show_progress = bool(config.get("show_progress", True))
     
     # Extract truncate_prefix_ratio: prioritize function parameter, then fall back to config
