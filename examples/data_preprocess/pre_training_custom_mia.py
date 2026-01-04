@@ -280,6 +280,30 @@ def compute_lexical_similarities(query_solution: str, candidate_solutions: List[
 # Global cache for embedding model
 _EMBEDDING_MODEL_CACHE = {}
 
+# Global cache for tokenizers
+_TOKENIZER_CACHE = {}
+
+
+def count_tokens(text: str, tokenizer_name: str = "allenai/tulu-2-7b") -> int:
+    """Count tokens in text using a cached tokenizer.
+    
+    Args:
+        text: The text to tokenize
+        tokenizer_name: Name of the tokenizer to use
+        
+    Returns:
+        Number of tokens in the text
+    """
+    if tokenizer_name not in _TOKENIZER_CACHE:
+        try:
+            from transformers import AutoTokenizer
+            _TOKENIZER_CACHE[tokenizer_name] = AutoTokenizer.from_pretrained(tokenizer_name)
+        except Exception as e:
+            raise ImportError(f"Failed to load tokenizer {tokenizer_name}: {e}")
+    
+    tokenizer = _TOKENIZER_CACHE[tokenizer_name]
+    return len(tokenizer.encode(text))
+
 
 def _get_embedding_model():
     """Get or load the embedding model (cached for efficiency)."""
@@ -377,7 +401,8 @@ def sample_additional_solutions(
     all_indices: List[Tuple],
     method: str,
     num_samples: int,
-    seed: int = 42
+    seed: int = 42,
+    paired_solution: str = None
 ) -> List[str]:
     """Sample additional solutions from the pool, excluding current example.
     
@@ -386,9 +411,10 @@ def sample_additional_solutions(
         current_idx: Index of current example in the pool
         all_solutions: Pool of all solutions (from members + non-members)
         all_indices: Corresponding indices as tuples (type, idx)
-        method: "random", "embedding", or "lexical"
+        method: "random", "embedding", "lexical", or "perturbed"
         num_samples: Number of solutions to sample
         seed: Random seed for reproducibility
+        paired_solution: For "perturbed" method, the corresponding paired solution to include first
         
     Returns:
         List of sampled solution strings
@@ -423,6 +449,28 @@ def sample_additional_solutions(
         sorted_indices = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)
         top_k_indices = sorted_indices[:num_samples]
         sampled_solutions = [candidate_solutions[i] for i in top_k_indices]
+        
+    elif method == "perturbed":
+        # For perturbed method, include paired solution first, then random samples
+        sampled_solutions = []
+        
+        # Add paired solution first if provided
+        if paired_solution is not None:
+            sampled_solutions.append(paired_solution)
+        
+        # Calculate how many random samples we need
+        remaining_samples = num_samples - len(sampled_solutions)
+        
+        if remaining_samples > 0:
+            # Filter out the paired solution from candidates if it exists
+            filtered_candidates = [sol for sol in candidate_solutions if sol != paired_solution]
+            remaining_samples = min(remaining_samples, len(filtered_candidates))
+            
+            if remaining_samples > 0:
+                rng = random.Random(seed + current_idx)
+                sampled_indices = rng.sample(range(len(filtered_candidates)), remaining_samples)
+                random_solutions = [filtered_candidates[i] for i in sampled_indices]
+                sampled_solutions.extend(random_solutions)
         
     else:
         raise ValueError(f"Unknown sampling method: {method}")
@@ -642,7 +690,7 @@ def main():
     )
     parser.add_argument(
         "--augment_sampling_method",
-        choices=["random", "embedding", "lexical"],
+        choices=["random", "embedding", "lexical", "perturbed"],
         default="random",
         help="Method for sampling additional solutions (default: random)",
     )
@@ -651,6 +699,34 @@ def main():
         type=int,
         default=1,
         help="Number of additional solutions to sample (default: 1)",
+    )
+    parser.add_argument(
+        "--diff_threshold",
+        type=int,
+        default=None,
+        help="Filter examples by diff field (keep only diff > threshold). Only applicable to datasets with 'diff' field.",
+    )
+    parser.add_argument(
+        "--min_tokens",
+        type=int,
+        default=None,
+        help="Minimum token count for input text filtering",
+    )
+    parser.add_argument(
+        "--max_tokens",
+        type=int,
+        default=None,
+        help="Maximum token count for input text filtering",
+    )
+    parser.add_argument(
+        "--tokenizer_name",
+        default="allenai/tulu-2-7b",
+        help="Tokenizer to use for token counting (default: allenai/tulu-2-7b)",
+    )
+    parser.add_argument(
+        "--strict_pairing",
+        action="store_true",
+        help="Enforce strict pairing: group by (title, id), keep only complete member/non-member pairs, and sample N pairs",
     )
 
     args = parser.parse_args()
@@ -663,6 +739,8 @@ def main():
             raise ValueError("--augment_target_gt requires --include_target_gt to be enabled")
         if args.augment_num_samples < 1:
             raise ValueError("--augment_num_samples must be at least 1")
+        if args.augment_sampling_method == "perturbed" and not args.strict_pairing:
+            raise ValueError("--augment_sampling_method='perturbed' requires --strict_pairing to be enabled")
     
     if args.mia_weights_members or args.mia_weights_nonmembers:
         if not (args.mia_weights_members and args.mia_weights_nonmembers):
@@ -683,6 +761,9 @@ def main():
     # Determine split name based on dataset
     if args.dataset_split is not None:
         split_name = args.dataset_split
+    elif "wikiMIA-2024-hard" in args.dataset_path:
+        # wikiMIA-2024-hard uses "test" split
+        split_name = "test"
     elif "WikiMIA" in args.dataset_path:
         split_name = f"WikiMIA_length{args.dataset_length}"
     else:
@@ -709,37 +790,136 @@ def main():
             f"Use --input_field to specify the correct field name."
         )
     
-    # Split dataset by label
-    members_indices = [i for i in range(len(ds_full)) if ds_full[i]["label"] == 1]
-    nonmembers_indices = [i for i in range(len(ds_full)) if ds_full[i]["label"] == 0]
+    # Apply filtering if specified
+    filtered_indices = []
     
-    if args.verbose:
-        print(f"[main] Found {len(members_indices)} members (label=1) and {len(nonmembers_indices)} non-members (label=0)")
-    
-    # Sample from each group if subset_size is specified
-    if args.subset_size is not None:
-        if args.subset_size > len(members_indices):
-            print(f"WARNING: Requested subset_size {args.subset_size} exceeds available members {len(members_indices)}. Using all {len(members_indices)} members.")
-            args.subset_size = len(members_indices)
+    if args.diff_threshold is not None or args.min_tokens is not None or args.max_tokens is not None:
+        if args.verbose:
+            print(f"\n=== Applying Filters ===")
+            if args.diff_threshold is not None:
+                print(f"Diff threshold: > {args.diff_threshold}")
+            if args.min_tokens is not None or args.max_tokens is not None:
+                print(f"Token range: [{args.min_tokens or 'no min'}, {args.max_tokens or 'no max'}]")
+                print(f"Using tokenizer: {args.tokenizer_name}")
         
-        if args.subset_size > len(nonmembers_indices):
-            print(f"WARNING: Requested subset_size {args.subset_size} exceeds available non-members {len(nonmembers_indices)}. Using all {len(nonmembers_indices)} non-members.")
-            args.subset_size = len(nonmembers_indices)
-        
-        rng = random.Random(args.subset_seed)
-        sampled_members_indices = rng.sample(members_indices, min(args.subset_size, len(members_indices)))
-        sampled_nonmembers_indices = rng.sample(nonmembers_indices, min(args.subset_size, len(nonmembers_indices)))
-        
-        sampled_members_indices.sort()
-        sampled_nonmembers_indices.sort()
+        for i in range(len(ds_full)):
+            ex = ds_full[i]
+            
+            # Apply diff filtering
+            if args.diff_threshold is not None:
+                if 'diff' not in ex:
+                    raise ValueError("Dataset does not have 'diff' field, but --diff_threshold was specified")
+                if ex['diff'] <= args.diff_threshold:
+                    continue
+            
+            # Apply token filtering
+            if args.min_tokens is not None or args.max_tokens is not None:
+                input_text = str(ex[args.input_field]).strip()
+                token_count = count_tokens(input_text, args.tokenizer_name)
+                
+                if args.min_tokens is not None and token_count < args.min_tokens:
+                    continue
+                if args.max_tokens is not None and token_count > args.max_tokens:
+                    continue
+            
+            filtered_indices.append(i)
         
         if args.verbose:
-            print(f"[main] Sampled {len(sampled_members_indices)} members and {len(sampled_nonmembers_indices)} non-members using seed {args.subset_seed}")
+            print(f"Filtered dataset: {len(filtered_indices)} / {len(ds_full)} examples passed filters")
     else:
-        sampled_members_indices = members_indices
-        sampled_nonmembers_indices = nonmembers_indices
+        filtered_indices = list(range(len(ds_full)))
+    
+    # Handle strict pairing mode
+    if args.strict_pairing:
         if args.verbose:
-            print(f"[main] Using all {len(sampled_members_indices)} members and {len(sampled_nonmembers_indices)} non-members")
+            print(f"\n=== Strict Pairing Mode ===")
+        
+        # Check if dataset has required fields for pairing
+        if len(ds_full) > 0:
+            sample_ex = ds_full[filtered_indices[0]] if filtered_indices else ds_full[0]
+            if 'title' not in sample_ex or 'id' not in sample_ex:
+                raise ValueError("Strict pairing requires 'title' and 'id' fields in the dataset")
+        
+        # Group by (title, id)
+        pairs = {}
+        for idx in filtered_indices:
+            ex = ds_full[idx]
+            key = (str(ex['title']), int(ex['id']))
+            
+            if key not in pairs:
+                pairs[key] = {'member': None, 'non_member': None, 'member_idx': None, 'non_member_idx': None}
+            
+            if ex['label'] == 1:
+                pairs[key]['member'] = ex
+                pairs[key]['member_idx'] = idx
+            else:
+                pairs[key]['non_member'] = ex
+                pairs[key]['non_member_idx'] = idx
+        
+        # Keep only complete pairs
+        complete_pairs = [p for p in pairs.values() if p['member'] is not None and p['non_member'] is not None]
+        
+        if args.verbose:
+            print(f"Found {len(complete_pairs)} complete pairs (from {len(pairs)} unique (title, id) combinations)")
+        
+        if len(complete_pairs) == 0:
+            raise ValueError("No complete member/non-member pairs found after filtering")
+        
+        # Sample N pairs
+        if args.subset_size is not None:
+            if args.subset_size > len(complete_pairs):
+                print(f"WARNING: Requested subset_size {args.subset_size} exceeds available pairs {len(complete_pairs)}. Using all {len(complete_pairs)} pairs.")
+                args.subset_size = len(complete_pairs)
+            
+            rng = random.Random(args.subset_seed)
+            sampled_pairs = rng.sample(complete_pairs, min(args.subset_size, len(complete_pairs)))
+        else:
+            sampled_pairs = complete_pairs
+        
+        # Extract indices
+        sampled_members_indices = [p['member_idx'] for p in sampled_pairs]
+        sampled_nonmembers_indices = [p['non_member_idx'] for p in sampled_pairs]
+        
+        if args.verbose:
+            print(f"Sampled {len(sampled_pairs)} pairs: {len(sampled_members_indices)} members + {len(sampled_nonmembers_indices)} non-members")
+            if len(sampled_pairs) > 0:
+                sample_pair = sampled_pairs[0]
+                print(f"Sample pair: member_idx={sample_pair['member_idx']}, non_member_idx={sample_pair['non_member_idx']}")
+                print(f"  Title: {sample_pair['member']['title']}")
+                print(f"  ID: {sample_pair['member']['id']}")
+    
+    else:
+        # Original behavior: split by label and sample independently
+        members_indices = [i for i in filtered_indices if ds_full[i]["label"] == 1]
+        nonmembers_indices = [i for i in filtered_indices if ds_full[i]["label"] == 0]
+        
+        if args.verbose:
+            print(f"[main] Found {len(members_indices)} members (label=1) and {len(nonmembers_indices)} non-members (label=0)")
+        
+        # Sample from each group if subset_size is specified
+        if args.subset_size is not None:
+            if args.subset_size > len(members_indices):
+                print(f"WARNING: Requested subset_size {args.subset_size} exceeds available members {len(members_indices)}. Using all {len(members_indices)} members.")
+                args.subset_size = len(members_indices)
+            
+            if args.subset_size > len(nonmembers_indices):
+                print(f"WARNING: Requested subset_size {args.subset_size} exceeds available non-members {len(nonmembers_indices)}. Using all {len(nonmembers_indices)} non-members.")
+                args.subset_size = len(nonmembers_indices)
+            
+            rng = random.Random(args.subset_seed)
+            sampled_members_indices = rng.sample(members_indices, min(args.subset_size, len(members_indices)))
+            sampled_nonmembers_indices = rng.sample(nonmembers_indices, min(args.subset_size, len(nonmembers_indices)))
+            
+            sampled_members_indices.sort()
+            sampled_nonmembers_indices.sort()
+            
+            if args.verbose:
+                print(f"[main] Sampled {len(sampled_members_indices)} members and {len(sampled_nonmembers_indices)} non-members using seed {args.subset_seed}")
+        else:
+            sampled_members_indices = members_indices
+            sampled_nonmembers_indices = nonmembers_indices
+            if args.verbose:
+                print(f"[main] Using all {len(sampled_members_indices)} members and {len(sampled_nonmembers_indices)} non-members")
     
     # Create processed examples with split input
     def create_example_with_split(example, idx, is_member: bool):
@@ -811,9 +991,27 @@ def main():
         
         print(f"Total solution pool size: {len(all_solutions)} (members + non-members)")
         
+        # Build pairing map for "perturbed" method
+        pairing_map = {}
+        if args.augment_sampling_method == "perturbed":
+            # For perturbed method, we need to map each member to its corresponding non-member
+            # This assumes members and non-members are in the same order (from strict pairing)
+            if len(processed_members) == len(processed_nonmembers):
+                for i in range(len(processed_members)):
+                    # Member at index i pairs with non-member at index i
+                    pairing_map[("member", i)] = processed_nonmembers[i]["solution"]
+                    pairing_map[("non_member", i)] = processed_members[i]["solution"]
+                
+                print(f"Built pairing map with {len(pairing_map)} entries (perturbed augmentation)")
+            else:
+                print(f"WARNING: Cannot use perturbed augmentation with unequal member/non-member counts. Falling back to random.")
+                args.augment_sampling_method = "random"
+        
         # Sample for members
         for i in range(len(processed_members)):
             current_solution = all_solutions[i]
+            paired_solution = pairing_map.get(("member", i), None)
+            
             sampled = sample_additional_solutions(
                 current_solution=current_solution,
                 current_idx=i,
@@ -821,7 +1019,8 @@ def main():
                 all_indices=all_indices,
                 method=args.augment_sampling_method,
                 num_samples=args.augment_num_samples,
-                seed=args.subset_seed
+                seed=args.subset_seed,
+                paired_solution=paired_solution
             )
             if sampled:
                 augmentation_map[("member", i)] = sampled
@@ -830,6 +1029,8 @@ def main():
         for i in range(len(processed_nonmembers)):
             current_solution = all_solutions[len(processed_members) + i]
             pool_idx = len(processed_members) + i
+            paired_solution = pairing_map.get(("non_member", i), None)
+            
             sampled = sample_additional_solutions(
                 current_solution=current_solution,
                 current_idx=pool_idx,
@@ -837,7 +1038,8 @@ def main():
                 all_indices=all_indices,
                 method=args.augment_sampling_method,
                 num_samples=args.augment_num_samples,
-                seed=args.subset_seed
+                seed=args.subset_seed,
+                paired_solution=paired_solution
             )
             if sampled:
                 augmentation_map[("non_member", i)] = sampled
@@ -991,6 +1193,10 @@ def main():
         _write_jsonl(nonmembers_path, nonmembers_rows)
         
         # Save indices
+        # Calculate total members and nonmembers from the filtered dataset
+        total_members = sum(1 for i in filtered_indices if ds_full[i]["label"] == 1)
+        total_nonmembers = sum(1 for i in filtered_indices if ds_full[i]["label"] == 0)
+        
         index_info = {
             "member_indices": sampled_members_indices,
             "nonmember_indices": sampled_nonmembers_indices,
@@ -1002,8 +1208,8 @@ def main():
                 "dataset_length": args.dataset_length,
                 "split": split_name,
                 "total_dataset_size": len(ds_full),
-                "total_members": len(members_indices),
-                "total_nonmembers": len(nonmembers_indices),
+                "total_members": total_members,
+                "total_nonmembers": total_nonmembers,
             },
             "preprocessing_config": {
                 "prefix_ratio": args.prefix_ratio,
