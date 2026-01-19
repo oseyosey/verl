@@ -728,6 +728,11 @@ def main():
         action="store_true",
         help="Enforce strict pairing: group by (title, id), keep only complete member/non-member pairs, and sample N pairs",
     )
+    parser.add_argument(
+        "--drop_empty_input",
+        action="store_true",
+        help="Drop examples with empty or whitespace-only input text before sampling",
+    )
 
     args = parser.parse_args()
 
@@ -793,9 +798,16 @@ def main():
     # Apply filtering if specified
     filtered_indices = []
     
-    if args.diff_threshold is not None or args.min_tokens is not None or args.max_tokens is not None:
+    if (
+        args.drop_empty_input
+        or args.diff_threshold is not None
+        or args.min_tokens is not None
+        or args.max_tokens is not None
+    ):
         if args.verbose:
             print(f"\n=== Applying Filters ===")
+            if args.drop_empty_input:
+                print("Drop empty input: enabled")
             if args.diff_threshold is not None:
                 print(f"Diff threshold: > {args.diff_threshold}")
             if args.min_tokens is not None or args.max_tokens is not None:
@@ -804,6 +816,11 @@ def main():
         
         for i in range(len(ds_full)):
             ex = ds_full[i]
+            input_text = str(ex[args.input_field]).strip()
+            
+            # Drop empty inputs early
+            if args.drop_empty_input and not input_text:
+                continue
             
             # Apply diff filtering
             if args.diff_threshold is not None:
@@ -814,7 +831,6 @@ def main():
             
             # Apply token filtering
             if args.min_tokens is not None or args.max_tokens is not None:
-                input_text = str(ex[args.input_field]).strip()
                 token_count = count_tokens(input_text, args.tokenizer_name)
                 
                 if args.min_tokens is not None and token_count < args.min_tokens:
